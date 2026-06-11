@@ -14,11 +14,23 @@ package desirestatuswriter
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"k8s.io/apimachinery/pkg/api/equality"
 
 	"github.com/openshift/kube-applier-gcp/internal/database"
 )
+
+func init() {
+	// FirestoreMetadata embeds time.Time which has unexported fields.
+	// equality.Semantic.DeepEqual panics on unexported fields unless a
+	// custom comparator is registered.
+	if err := equality.Semantic.AddFunc(func(a, b time.Time) bool {
+		return a.Equal(b)
+	}); err != nil {
+		panic(err)
+	}
+}
 
 // Fetcher reads the current state of a single desire by a controller-defined
 // typed key.

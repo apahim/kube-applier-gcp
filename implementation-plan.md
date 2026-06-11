@@ -772,13 +772,18 @@ serviceAccount:
 
 **Exit criteria met:** `SharedIndexInformer` backed by Firestore listener works end-to-end against the emulator. Informer syncs, delivers Add/Update/Delete events, and recovers from listener disconnection via Reflector re-list.
 
-### Phase 3: Controllers (Week 3-4)
-**One PR per controller pair.**
+### Phase 3: Controllers (Week 3-4) ✅ COMPLETE
+**Implemented as a single working set (both controller pairs together).**
 - 3a: `ApplyDesireController` + `DeleteDesireController` (adapted: `UpdateTime` replaces etag, `FieldManager = "gcp-hcp-kube-applier"`)
 - 3b: `ReadDesireInformerManagingController` (with goroutine lifecycle: `runningInstance` struct, `stopByKey()` with `<-done` wait, `stopAll()` in `defer Run()`)
 - 3b: `ReadDesireKubernetesController` (with `listWatchWithoutWatchListSemantics` wrapper, `HasSynced` guard, byte-equal no-op detection)
-- Unit tests for all controllers per test matrices above
-- Integration test with Firestore emulator + envtest
+- Unit tests for all controllers per test matrices above (49 tests total: 18 apply, 14 delete, 7 read_kubernetes, 10 read_manager)
+- **Key deviation from plan:** Registered a `time.Time` equality comparator in `desirestatuswriter.go`'s `init()` function. ARO HCP's `CosmosMetadata` uses `azcore.ETag` (a string type), so `equality.Semantic.DeepEqual` never encounters unexported fields. GCP's `FirestoreMetadata` embeds `time.Time` directly (which has unexported `wall`, `ext` fields), causing a panic without the custom comparator.
+- **Key deviation from plan:** Logging uses `klog.FromContext(ctx).WithName(controllerName)` instead of ARO's `utils.LoggerFromContext(ctx)` / `utils.ContextWithLogger(ctx, logger)`. The GCP codebase has no `internal/utils` package; standard klog context loggers are idiomatic for k8s controllers.
+- **Key deviation from plan:** `go.mod` promoted `k8s.io/klog/v2` from indirect to direct dependency. Additional indirect deps added for `k8s.io/client-go/dynamic/fake` test usage.
+- **Deferred to Phase 4:** Integration test with Firestore emulator + envtest (requires binary wiring to be meaningful)
+
+**Exit criteria met:** All 4 controllers build, vet clean, and pass unit tests. `go test ./... -count=1` passes across the entire codebase (all Phase 1/2a/2b tests unaffected). Test matrices from the plan are covered at the unit level; integration-level scenarios (live informer events, listener reconnection) are deferred to Phase 4.
 
 ### Phase 4: Binary Wiring (Week 4)
 **Single PR. Makes the binary runnable.**
