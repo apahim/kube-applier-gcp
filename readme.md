@@ -77,7 +77,8 @@ or write another management cluster's Desires — there is no shared database to
 
 Firestore snapshot listeners provide real-time change notification: the kube-applier
 opens a persistent gRPC stream per collection and receives document changes as they happen,
-rather than polling.
+rather than polling. The informer's resync period still triggers periodic handler resyncs
+for cooldown-gated re-reconciliation.
 
 ### Authentication and isolation
 - GKE Workload Identity Federation: pod KSA → IAM GSA (no service account keys)
