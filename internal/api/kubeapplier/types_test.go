@@ -18,7 +18,7 @@ func newTestApplyDesire() *ApplyDesire {
 		},
 		Spec: ApplyDesireSpec{
 			ManagementCluster: "mc-dev-westus3-1",
-			ClusterName:       "cluster-a",
+			ClusterID:       "cluster-a",
 			NodePoolName:      "np-1",
 			TargetItem: ResourceReference{
 				Group:     "",
@@ -49,7 +49,7 @@ func TestApplyDesire_DeepCopy_Isolation(t *testing.T) {
 
 	// Mutate the copy
 	copied.DocumentID = "changed"
-	copied.Spec.ClusterName = "changed-cluster"
+	copied.Spec.ClusterID = "changed-cluster"
 	copied.Spec.KubeContent.Raw = []byte(`{}`)
 	copied.Status.Conditions[0].Reason = "Changed"
 
@@ -57,8 +57,8 @@ func TestApplyDesire_DeepCopy_Isolation(t *testing.T) {
 	if original.DocumentID != "my-apply-desire" {
 		t.Errorf("original DocumentID mutated: %s", original.DocumentID)
 	}
-	if original.Spec.ClusterName != "cluster-a" {
-		t.Errorf("original ClusterName mutated: %s", original.Spec.ClusterName)
+	if original.Spec.ClusterID != "cluster-a" {
+		t.Errorf("original ClusterID mutated: %s", original.Spec.ClusterID)
 	}
 	if string(original.Spec.KubeContent.Raw) == "{}" {
 		t.Error("original KubeContent.Raw mutated")
@@ -90,8 +90,8 @@ func TestApplyDesire_JSONRoundTrip(t *testing.T) {
 	if decoded.DocumentID != original.DocumentID {
 		t.Errorf("DocumentID: got %s, want %s", decoded.DocumentID, original.DocumentID)
 	}
-	if decoded.Spec.ClusterName != original.Spec.ClusterName {
-		t.Errorf("ClusterName: got %s, want %s", decoded.Spec.ClusterName, original.Spec.ClusterName)
+	if decoded.Spec.ClusterID != original.Spec.ClusterID {
+		t.Errorf("ClusterID: got %s, want %s", decoded.Spec.ClusterID, original.Spec.ClusterID)
 	}
 	if decoded.Spec.ManagementCluster != original.Spec.ManagementCluster {
 		t.Errorf("ManagementCluster: got %s, want %s", decoded.Spec.ManagementCluster, original.Spec.ManagementCluster)
@@ -121,7 +121,7 @@ func TestDeleteDesire_DeepCopy_Isolation(t *testing.T) {
 	original := &DeleteDesire{
 		FirestoreMetadata: FirestoreMetadata{DocumentID: "my-delete-desire"},
 		Spec: DeleteDesireSpec{
-			ClusterName: "cluster-a",
+			ClusterID: "cluster-a",
 			TargetItem:  ResourceReference{Version: "v1", Resource: "configmaps", Name: "x"},
 		},
 		Status: DeleteDesireStatus{
@@ -140,7 +140,7 @@ func TestReadDesire_DeepCopy_Isolation(t *testing.T) {
 	original := &ReadDesire{
 		FirestoreMetadata: FirestoreMetadata{DocumentID: "my-read-desire"},
 		Spec: ReadDesireSpec{
-			ClusterName: "cluster-a",
+			ClusterID: "cluster-a",
 			TargetItem:  ResourceReference{Version: "v1", Resource: "secrets", Name: "x"},
 		},
 		Status: ReadDesireStatus{

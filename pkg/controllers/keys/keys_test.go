@@ -10,15 +10,15 @@ func TestApplyDesireKeyFromDesire_ClusterScoped(t *testing.T) {
 	d := &kubeapplier.ApplyDesire{
 		FirestoreMetadata: kubeapplier.FirestoreMetadata{DocumentID: "desire-1"},
 		Spec: kubeapplier.ApplyDesireSpec{
-			ClusterName: "cluster-a",
+			ClusterID: "cluster-a",
 		},
 	}
 	key, err := ApplyDesireKeyFromDesire(d)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if key.ClusterName != "cluster-a" {
-		t.Errorf("ClusterName: got %s, want cluster-a", key.ClusterName)
+	if key.ClusterID != "cluster-a" {
+		t.Errorf("ClusterID: got %s, want cluster-a", key.ClusterID)
 	}
 	if key.Name != "desire-1" {
 		t.Errorf("Name: got %s, want desire-1", key.Name)
@@ -32,7 +32,7 @@ func TestApplyDesireKeyFromDesire_NodePoolScoped(t *testing.T) {
 	d := &kubeapplier.ApplyDesire{
 		FirestoreMetadata: kubeapplier.FirestoreMetadata{DocumentID: "desire-2"},
 		Spec: kubeapplier.ApplyDesireSpec{
-			ClusterName:  "cluster-a",
+			ClusterID:  "cluster-a",
 			NodePoolName: "np-1",
 		},
 	}
@@ -50,7 +50,7 @@ func TestApplyDesireKeyFromDesire_NodePoolScoped(t *testing.T) {
 
 func TestApplyDesireKeyFromDesire_EmptyDocumentID(t *testing.T) {
 	d := &kubeapplier.ApplyDesire{
-		Spec: kubeapplier.ApplyDesireSpec{ClusterName: "cluster-a"},
+		Spec: kubeapplier.ApplyDesireSpec{ClusterID: "cluster-a"},
 	}
 	_, err := ApplyDesireKeyFromDesire(d)
 	if err == nil {
@@ -62,7 +62,7 @@ func TestDeleteDesireKeyFromDesire(t *testing.T) {
 	d := &kubeapplier.DeleteDesire{
 		FirestoreMetadata: kubeapplier.FirestoreMetadata{DocumentID: "del-1"},
 		Spec: kubeapplier.DeleteDesireSpec{
-			ClusterName:  "cluster-b",
+			ClusterID:  "cluster-b",
 			NodePoolName: "np-2",
 		},
 	}
@@ -70,7 +70,7 @@ func TestDeleteDesireKeyFromDesire(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if key.ClusterName != "cluster-b" || key.NodePoolName != "np-2" || key.Name != "del-1" {
+	if key.ClusterID != "cluster-b" || key.NodePoolName != "np-2" || key.Name != "del-1" {
 		t.Errorf("unexpected key: %+v", key)
 	}
 	if !key.IsNodePoolScoped() {
@@ -90,14 +90,14 @@ func TestReadDesireKeyFromDesire(t *testing.T) {
 	d := &kubeapplier.ReadDesire{
 		FirestoreMetadata: kubeapplier.FirestoreMetadata{DocumentID: "read-1"},
 		Spec: kubeapplier.ReadDesireSpec{
-			ClusterName: "cluster-c",
+			ClusterID: "cluster-c",
 		},
 	}
 	key, err := ReadDesireKeyFromDesire(d)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if key.ClusterName != "cluster-c" || key.Name != "read-1" {
+	if key.ClusterID != "cluster-c" || key.Name != "read-1" {
 		t.Errorf("unexpected key: %+v", key)
 	}
 	if key.IsNodePoolScoped() {

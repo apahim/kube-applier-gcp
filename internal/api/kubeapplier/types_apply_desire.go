@@ -15,7 +15,7 @@ type ApplyDesire struct {
 
 type ApplyDesireSpec struct {
 	ManagementCluster string                `json:"managementCluster" firestore:"managementCluster"`
-	ClusterName       string                `json:"clusterName" firestore:"clusterName"`
+	ClusterID         string                `json:"clusterID" firestore:"clusterID"`
 	NodePoolName      string                `json:"nodePoolName,omitempty" firestore:"nodePoolName,omitempty"`
 	TargetItem        ResourceReference     `json:"targetItem" firestore:"targetItem"`
 	KubeContent       *runtime.RawExtension `json:"kubeContent,omitempty" firestore:"kubeContent,omitempty"`

@@ -11,7 +11,7 @@ import (
 
 // ApplyDesireKey identifies a single ApplyDesire.
 type ApplyDesireKey struct {
-	ClusterName  string
+	ClusterID  string
 	NodePoolName string
 	Name         string
 }
@@ -23,7 +23,7 @@ func ApplyDesireKeyFromDesire(d *kubeapplier.ApplyDesire) (ApplyDesireKey, error
 		return ApplyDesireKey{}, fmt.Errorf("ApplyDesire has empty DocumentID")
 	}
 	return ApplyDesireKey{
-		ClusterName:  d.Spec.ClusterName,
+		ClusterID:  d.Spec.ClusterID,
 		NodePoolName: d.Spec.NodePoolName,
 		Name:         d.DocumentID,
 	}, nil
@@ -31,7 +31,7 @@ func ApplyDesireKeyFromDesire(d *kubeapplier.ApplyDesire) (ApplyDesireKey, error
 
 // DeleteDesireKey identifies a single DeleteDesire.
 type DeleteDesireKey struct {
-	ClusterName  string
+	ClusterID  string
 	NodePoolName string
 	Name         string
 }
@@ -43,7 +43,7 @@ func DeleteDesireKeyFromDesire(d *kubeapplier.DeleteDesire) (DeleteDesireKey, er
 		return DeleteDesireKey{}, fmt.Errorf("DeleteDesire has empty DocumentID")
 	}
 	return DeleteDesireKey{
-		ClusterName:  d.Spec.ClusterName,
+		ClusterID:  d.Spec.ClusterID,
 		NodePoolName: d.Spec.NodePoolName,
 		Name:         d.DocumentID,
 	}, nil
@@ -51,7 +51,7 @@ func DeleteDesireKeyFromDesire(d *kubeapplier.DeleteDesire) (DeleteDesireKey, er
 
 // ReadDesireKey identifies a single ReadDesire.
 type ReadDesireKey struct {
-	ClusterName  string
+	ClusterID  string
 	NodePoolName string
 	Name         string
 }
@@ -63,7 +63,7 @@ func ReadDesireKeyFromDesire(d *kubeapplier.ReadDesire) (ReadDesireKey, error) {
 		return ReadDesireKey{}, fmt.Errorf("ReadDesire has empty DocumentID")
 	}
 	return ReadDesireKey{
-		ClusterName:  d.Spec.ClusterName,
+		ClusterID:  d.Spec.ClusterID,
 		NodePoolName: d.Spec.NodePoolName,
 		Name:         d.DocumentID,
 	}, nil

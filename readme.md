@@ -61,14 +61,16 @@ Each kube-applier pod authenticates via GKE Workload Identity Federation
 Each database contains three collections:
 ```
 database: mc-{managementClusterName}
-  applydesires/{desireName}
-  deletedesires/{desireName}
-  readdesires/{desireName}
+  applydesires/{clusterID}--{desireName}
+  deletedesires/{clusterID}--{desireName}
+  readdesires/{clusterID}--{desireName}
 ```
 
-Document IDs are the desire name. Since a single MC can manage multiple clusters,
-desire names must be globally unique within the MC database. The backend is responsible
-for generating unique names (e.g., by including cluster/nodepool in the desire name).
+Document IDs are composite: `{clusterID}--{desireName}`. The cluster ID prefix
+provides structural uniqueness across hosted clusters within the same MC database
+and makes orphan cleanup by cluster trivial (prefix scan on the ID). Both
+HostedCluster-scoped and NodePool-scoped desires use the same `{clusterID}--{desireName}`
+format — nodepool identity lives in the spec, not the document ID.
 
 The per-database layout means an escape from one management cluster's pod cannot read
 or write another management cluster's Desires — there is no shared database to leak through.

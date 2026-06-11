@@ -14,7 +14,7 @@ type DeleteDesire struct {
 
 type DeleteDesireSpec struct {
 	ManagementCluster string            `json:"managementCluster" firestore:"managementCluster"`
-	ClusterName       string            `json:"clusterName" firestore:"clusterName"`
+	ClusterID         string            `json:"clusterID" firestore:"clusterID"`
 	NodePoolName      string            `json:"nodePoolName,omitempty" firestore:"nodePoolName,omitempty"`
 	TargetItem        ResourceReference `json:"targetItem,omitempty" firestore:"targetItem"`
 }

@@ -39,9 +39,9 @@ This plan adapts the kube-applier for GCP HCP, replacing Cosmos DB with **Google
 
 ```
 database: mc-{managementClusterName}
-  applydesires/{desireName}  -> {spec: {targetItem, kubeContent, managementCluster, clusterName, nodePoolName?}, status: {conditions}}
-  deletedesires/{desireName} -> {spec: {targetItem, managementCluster, clusterName, nodePoolName?}, status: {conditions}}
-  readdesires/{desireName}   -> {spec: {targetItem, managementCluster, clusterName, nodePoolName?}, status: {conditions, kubeContent}}
+  applydesires/{clusterID}--{desireName}  -> {spec: {targetItem, kubeContent, managementCluster, clusterID, nodePoolName?}, status: {conditions}}
+  deletedesires/{clusterID}--{desireName} -> {spec: {targetItem, managementCluster, clusterID, nodePoolName?}, status: {conditions}}
+  readdesires/{clusterID}--{desireName}   -> {spec: {targetItem, managementCluster, clusterID, nodePoolName?}, status: {conditions, kubeContent}}
 ```
 
 ### Authentication & Isolation
@@ -138,7 +138,7 @@ kube-applier-gcp/
 |---|---|---|
 | **FirestoreMetadata** (replaces CosmosMetadata) | `DocumentID string`, `UpdateTime time.Time`, `CreateTime time.Time` | Firestore server fields instead of Cosmos etag/resourceID |
 | **Desire types** | `ManagementCluster` is `string` (not `*azcorearm.ResourceID`); add `ClusterName`, `NodePoolName` as explicit spec fields | ARM hierarchy flattened |
-| **Keys** | `ApplyDesireKey{ClusterName, NodePoolName, Name}` parsed from spec fields, not ARM ResourceID | No ARM parsing needed |
+| **Keys** | `ApplyDesireKey{ClusterID, NodePoolName, Name}` parsed from spec fields, not ARM ResourceID | No ARM parsing needed |
 | **Database CRUD** | `firestore.Client` + `Collection().Doc().Get/Set/Delete` with `LastUpdateTime` precondition | Replaces Cosmos container + partition key |
 | **Informers** | Firestore `Snapshots()` listener feeds `cache.SharedIndexInformer` via custom `watch.Interface` | Replaces Cosmos expiringWatcher |
 | **Controller handleUpdate** | `!oldD.UpdateTime.Equal(newD.UpdateTime)` | Replaces `oldD.GetEtag() != newD.GetEtag()` |
@@ -154,7 +154,7 @@ kube-applier-gcp/
 |---|---|---|---|
 | **Per-parent CRUD routing** (`key.CRUD(client)` → `ForCluster()`/`ForNodePool()`) | Cosmos requires a partition key on every query; `ResourceParent` constructs it | Firestore has no partition key; per-MC database isolation makes parent routing unnecessary | Controllers call `client.ApplyDesires().Get(ctx, documentID)` directly |
 | **Narrow typed CRUD interfaces** (`KubeApplierApplyDesireCRUD`, etc.) | Wrappers that expose only `ForCluster()`/`ForNodePool()` to each controller | These exist solely for parent-scoped routing, which is eliminated | Controllers take `ResourceCRUD[T]` directly — one interface, pre-scoped to the collection |
-| **`UntypedCRUD`** (walks container by resourceID prefix) | Orphan cleanup: delete desires whose parent cluster/nodepool no longer exists | Flat collections + typed lister indexes make typed cleanup simpler | Backend queries by `spec.clusterName` or `spec.nodePoolName` via lister indexes, then batch-deletes through typed `ResourceCRUD[T].Delete()` |
+| **`UntypedCRUD`** (walks container by resourceID prefix) | Orphan cleanup: delete desires whose parent cluster/nodepool no longer exists | Flat collections + typed lister indexes make typed cleanup simpler | Backend queries by `spec.clusterID` or `spec.nodePoolName` via lister indexes, then batch-deletes through typed `ResourceCRUD[T].Delete()` |
 | **`GenericDocument[T]` envelope** | Cosmos wraps each document in a partition-keyed envelope type | Firestore stores documents directly — no envelope, no partition key field | Desires serialize directly via Firestore codec; `FirestoreMetadata` fields use `firestore:"-"` |
 | **`KubeApplierDBClients` lister-walk** (plural registry resolves container names via MC lister) | Cosmos container names come from MC status field; must walk lister to resolve | Firestore database names are deterministic: `mc-{clusterName}` — no lookup needed | Direct construction: `NewKubeApplierDBClient(ctx, project, "mc-"+mcName)` |
 
@@ -166,7 +166,7 @@ kube-applier-gcp/
 - Per-database backup/restore granularity aligns with MC lifecycle
 - **Scaling constraint:** Firestore allows up to 100 named databases per project. This is sufficient for the expected MC count.
 
-**Document ID collision safeguard:** Document IDs are `{desireName}` in flat collections. Since a single MC can manage multiple clusters, desire names must be globally unique within the MC. The backend is responsible for generating unique names (e.g., by including cluster/nodepool in the desire name). If this naming contract is violated, desires from different clusters would overwrite each other. Alternative: use composite IDs like `{clusterName}--{desireName}` to encode cluster affinity in the ID itself.
+**Document ID format:** Document IDs are composite: `{clusterID}--{desireName}`. The cluster ID prefix provides structural uniqueness across hosted clusters within the same MC database and makes orphan cleanup by cluster trivial (prefix scan on the ID). Both HostedCluster-scoped and NodePool-scoped desires use the same format — nodepool identity lives in `spec.nodePoolName`, not the document ID.
 
 **Cooldown gates with real-time listeners:** Firestore snapshot listeners deliver events for the controller's own status writes (each write bumps `UpdateTime`, triggering a listener event). Without cooldown gates, this creates the same feedback loop Cosmos has: write status → event fired → controller re-syncs → writes same status → event fired → ... The cooldown gate breaks this cycle by gating unchanged-spec resyncs. This is why cooldown is retained despite Firestore's real-time nature.
 
@@ -182,7 +182,7 @@ kube-applier-gcp/
 // internal/api/kubeapplier/types_firestoredata.go
 type FirestoreMetadata struct {
     // DocumentID is the Firestore document path relative to the database root.
-    // Format: "{desireName}" (collection is implicit in CRUD scope).
+    // Format: "{clusterID}--{desireName}" (collection is implicit in CRUD scope).
     DocumentID string    `json:"documentID" firestore:"-"`
 
     // UpdateTime is the Firestore server-managed last-update timestamp.
@@ -206,7 +206,7 @@ type ApplyDesire struct {
 
 type ApplyDesireSpec struct {
     ManagementCluster string                `json:"managementCluster" firestore:"managementCluster"`
-    ClusterName       string                `json:"clusterName" firestore:"clusterName"`
+    ClusterID         string                `json:"clusterID" firestore:"clusterID"`
     NodePoolName      string                `json:"nodePoolName,omitempty" firestore:"nodePoolName,omitempty"`
     TargetItem        ResourceReference     `json:"targetItem" firestore:"targetItem"`
     KubeContent       *runtime.RawExtension `json:"kubeContent,omitempty" firestore:"kubeContent,omitempty"`
@@ -489,14 +489,14 @@ func (c *ReadDesireInformerManagingController) stopByKey(key keys.ReadDesireKey)
 ```go
 // pkg/controllers/keys/keys.go
 type ApplyDesireKey struct {
-    ClusterName  string
+    ClusterID    string
     NodePoolName string
-    Name         string  // = Firestore DocumentID
+    Name         string  // = Firestore DocumentID ({clusterID}--{desireName})
 }
 
 func ApplyDesireKeyFromDesire(d *kubeapplier.ApplyDesire) (ApplyDesireKey, error) {
     return ApplyDesireKey{
-        ClusterName:  d.Spec.ClusterName,
+        ClusterID:    d.Spec.ClusterID,
         NodePoolName: d.Spec.NodePoolName,
         Name:         d.DocumentID,
     }, nil
