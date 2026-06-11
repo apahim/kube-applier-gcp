@@ -1,0 +1,17 @@
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Go
+bin/
+vendor/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude Code
+.claude/
