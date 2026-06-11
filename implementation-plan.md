@@ -785,7 +785,7 @@ serviceAccount:
 
 **Exit criteria met:** All 4 controllers build, vet clean, and pass unit tests. `go test ./... -count=1` passes across the entire codebase (all Phase 1/2a/2b tests unaffected). Test matrices from the plan are covered at the unit level; integration-level scenarios (live informer events, listener reconnection) are deferred to Phase 4.
 
-### Phase 4: Binary Wiring (Week 4)
+### Phase 4: Binary Wiring (Week 4) ✅ COMPLETE
 **Single PR. Makes the binary runnable.**
 - `cmd/root.go` with GCP flags + validation (catch `--flag=` edge cases)
 - `pkg/app/options.go`, `firestore_wiring.go`, `kube_applier.go` run loop
@@ -795,7 +795,13 @@ serviceAccount:
 - Error aggregation: buffered `errCh`, `errors.Join()`, filter `http.ErrServerClosed`
 - Port `kube_wiring.go`, `leader_election_wiring.go`
 - Dockerfile + Makefile
-- End-to-end smoke test with emulator
+- New direct dependencies added to `go.mod`: `github.com/spf13/cobra`, `github.com/prometheus/client_golang`, `k8s.io/component-base v0.36.1`, `github.com/go-logr/logr` (promoted from indirect)
+- **Key deviation from plan:** Logging uses `klog.FromContext(ctx)` and `klog.NewContext(ctx, logger)` throughout, consistent with Phase 3's controller logging. ARO HCP's `utils.LoggerFromContext`/`utils.ContextWithLogger` are not ported — the GCP codebase has no `internal/utils` package.
+- **Key deviation from plan:** Signal handling uses stdlib `signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)` instead of porting ARO HCP's `internal/signal` package. Same behavior, fewer files.
+- **Key deviation from plan:** `Options.Informers` field added to the Options struct. ARO HCP creates informers inside `runControllersUnderLeaderElection` from `KubeApplierDBClient.Listers()`. GCP informers are constructed from a `*firestore.Client` via `informers.NewKubeApplierInformers(firestoreClient)`, so they are built in `ToKubeApplierOptions` and passed through Options.
+- **Deferred:** End-to-end smoke test with Firestore emulator + envtest. The binary compiles, flags parse correctly, and all 49+ Phase 1–3 unit tests pass. A full integration test exercising the assembled binary against the emulator is deferred to Phase 5/6.
+
+**Exit criteria met:** Binary builds, `go vet` clean, all existing tests pass. `--help` displays GCP-specific flags. Missing required flags produce proper error with exit code 1. Empty-string `--flag=` validation catches and rejects.
 
 ### Phase 5: Deployment (Week 5)
 **Single PR. Infrastructure and deployment.**
