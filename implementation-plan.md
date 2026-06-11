@@ -307,18 +307,19 @@ type KubeApplierDBClient interface {
     DeleteDesires() ResourceCRUD[kubeapplier.DeleteDesire]
     ReadDesires() ResourceCRUD[kubeapplier.ReadDesire]
     Close() error
-    // Listers() is added in Phase 2b when the informer bridge exists.
 }
 ```
 
-`Listers()` is deferred to Phase 2b — it returns informer-backed listers which depend on the
-Firestore snapshot listener bridge. The `KubeApplierDBClient` interface gains the method when
-that machinery is implemented.
+Informers and listers are constructed separately at app wiring time via
+`informers.NewKubeApplierInformers(firestoreClient)`, not attached to `KubeApplierDBClient`.
+The DB client is a CRUD handle; informers are a higher-level concern that wraps a Firestore
+client directly (they need `collection.Snapshots()` and `collection.Documents().GetAll()`,
+not the typed CRUD layer).
 
 **Deliberate simplification from ARO HCP** (see "Deliberately eliminated" table above):
 - **Drops `ResourceParent` and per-parent CRUD scoping** — Cosmos requires partition-keyed routing through `ForCluster()`/`ForNodePool()` methods. Firestore's per-database isolation eliminates this; controllers call `ResourceCRUD[T]` directly.
 - **Drops narrow typed interfaces** (`KubeApplierApplyDesireCRUD`, etc.) — these existed solely to expose parent-scoped routing to individual controllers. With flat CRUD, controllers take `ResourceCRUD[T]` directly.
-- **Drops `UntypedCRUD`** — Cosmos needed untyped document walking for orphan cleanup. Firestore replaces this with typed queries: the backend uses lister indexes (`ByCluster`, `ByNodePool`) to find orphaned desires, then deletes them through typed `ResourceCRUD[T].Delete()`.
+- **Drops `UntypedCRUD`** — Cosmos needed untyped document walking for orphan cleanup. Firestore replaces this with typed queries when the backend service needs them.
 - **Drops `GenericDocument[T]` envelope** — Cosmos wraps documents in a partition-keyed envelope. Firestore stores desires directly; `FirestoreMetadata` fields use `firestore:"-"` and are populated from `DocumentSnapshot` server fields.
 
 ### 4. Firestore CRUD Implementation
@@ -370,88 +371,53 @@ The most architecturally significant adaptation. Wraps Firestore's real-time `Sn
 ```go
 // internal/database/informers/listener_watcher.go
 type firestoreWatcher struct {
-    resultCh chan watch.Event
+    resultCh chan watch.Event  // buffered (100)
     done     chan struct{}
     cancel   context.CancelFunc
 }
 
 func newFirestoreWatcher(
     ctx context.Context,
-    query firestore.Query,
+    collection *firestore.CollectionRef,
     convertFn func(*firestore.DocumentSnapshot) (runtime.Object, error),
-) *firestoreWatcher {
-    ctx, cancel := context.WithCancel(ctx)
-    w := &firestoreWatcher{
-        resultCh: make(chan watch.Event, 100),
-        done:     make(chan struct{}),
-        cancel:   cancel,
-    }
-    go func() {
-        defer close(w.resultCh)
-        defer close(w.done)
-        snapIter := query.Snapshots(ctx)
-        defer snapIter.Stop()
-        for {
-            snap, err := snapIter.Next()
-            if err != nil {
-                if ctx.Err() != nil {
-                    return
-                }
-                // Send error event and terminate
-                w.resultCh <- watch.Event{Type: watch.Error, Object: &metav1.Status{...}}
-                return
-            }
-            for _, change := range snap.Changes {
-                obj, err := convertFn(change.Doc)
-                if err != nil {
-                    continue
-                }
-                var eventType watch.EventType
-                switch change.Kind {
-                case firestore.DocumentAdded:
-                    eventType = watch.Added
-                case firestore.DocumentModified:
-                    eventType = watch.Modified
-                case firestore.DocumentRemoved:
-                    eventType = watch.Deleted
-                }
-                w.resultCh <- watch.Event{Type: eventType, Object: obj}
-            }
-        }
-    }()
-    return w
-}
+) *firestoreWatcher
 ```
+
+The goroutine calls `collection.Snapshots(childCtx)` and loops on `snapIter.Next()`. Each `DocumentChange` is mapped: `DocumentAdded→Added`, `DocumentModified→Modified`, `DocumentRemoved→Deleted`. Events are sent with a context-aware select to prevent deadlock if the consumer stops. `Stop()` cancels the child context (idempotent).
 
 Unlike ARO HCP's `expiringWatcher` (forces relist every 30s because Cosmos has no watch), the Firestore listener stays connected permanently. The informer's `ResyncPeriod` still triggers handler resyncs for cooldown-gated re-reconciliation.
 
-**Error recovery semantics:** When the Firestore gRPC stream breaks (network blip, token refresh, Firestore maintenance), the watcher sends a `watch.Error` event and returns. The informer's `Reflector` handles this by:
+**`listWatchWithoutWatchListSemantics` wrapper (required):** The informer's `ListWatch` is wrapped to opt out of client-go v0.35+'s WatchList streaming mode. Firestore's snapshot listener does not emit bookmark events; without this wrapper, the Reflector waits for a bookmark that never arrives and `WaitForCacheSync` blocks forever. This is the same wrapper needed by ReadDesireKubernetesController (Section 8).
+
+**Error recovery semantics:** When the Firestore gRPC stream breaks (network blip, token refresh, Firestore maintenance), the watcher sends a `watch.Error` event with `StatusReasonExpired` and returns. The informer's `Reflector` handles this by:
 1. Calling `ListWithContextFunc` to re-read the full collection (re-list)
 2. Calling `WatchFuncWithContext` to establish a new snapshot listener
 3. Applying internal backoff on repeated failures
 
 This means `ListWithContextFunc` must always work as the re-list path after listener failure. Transient gRPC errors (`codes.Unavailable`, `codes.Internal`) are retried by the Reflector's backoff — the watcher does not need its own retry loop. Only `ctx.Err() != nil` (intentional shutdown) should exit silently.
 
+**Exported helpers for the informer bridge:** The `database` package exports `SnapshotToApplyDesire`, `SnapshotToDeleteDesire`, `SnapshotToReadDesire` converter functions and `CollectionApplyDesires`, `CollectionDeleteDesires`, `CollectionReadDesires` collection name constants. These are consumed by the `informers` sub-package for its `ListWithContextFunc` and `WatchFuncWithContext`.
+
 ### 6. Informer Factory
 
 ```go
 // internal/database/informers/informers.go
-func NewApplyDesireInformer(client *firestore.Client, relistDuration time.Duration) cache.SharedIndexInformer {
-    collection := client.Collection("applydesires")
-    lw := &cache.ListWatch{
-        ListWithContextFunc: func(ctx context.Context, opts metav1.ListOptions) (runtime.Object, error) {
-            snaps, err := collection.Documents(ctx).GetAll()
-            // ... marshal into ApplyDesireList
-        },
-        WatchFuncWithContext: func(ctx context.Context, opts metav1.ListOptions) (watch.Interface, error) {
-            return newFirestoreWatcher(ctx, collection.Query, convertApplyDesire), nil
-        },
-    }
-    return cache.NewSharedIndexInformerWithOptions(lw, &kubeapplier.ApplyDesire{}, cache.SharedIndexInformerOptions{
-        ResyncPeriod: relistDuration,
-        Indexers:     desireIndexers(),
-    })
+type KubeApplierInformers interface {
+    ApplyDesires() (cache.SharedIndexInformer, listers.ApplyDesireLister)
+    DeleteDesires() (cache.SharedIndexInformer, listers.DeleteDesireLister)
+    ReadDesires() (cache.SharedIndexInformer, listers.ReadDesireLister)
+    RunWithContext(ctx context.Context)
 }
+
+func NewKubeApplierInformers(client *firestore.Client) KubeApplierInformers
+func NewKubeApplierInformersWithResyncPeriod(client *firestore.Client, resyncPeriod time.Duration) KubeApplierInformers
+```
+
+Each per-type informer is constructed via `newDesireInformer(collection, exampleObj, convertFn, listFn, resyncPeriod)` which builds a `cache.ListWatch` wrapped in `listWatchWithoutWatchListSemantics`. The `ListWithContextFunc` calls `collection.Documents(ctx).GetAll()` and converts via the type-specific `SnapshotTo*Desire` function. The `WatchFuncWithContext` returns a `newFirestoreWatcher`. No custom indexers are registered — the default `MetaNamespaceKeyFunc` store key (= DocumentID) is sufficient.
+
+Listers (`List()`, `Get(documentID)`) are constructed from `informer.GetIndexer()`. No `ByCluster`/`ByNodePool` indexes — those are backend service concerns, not needed by the kube-applier controllers which process every desire in their database.
+
+`RunWithContext` starts all three informers in goroutines and blocks on `<-ctx.Done()`.
 ```
 
 ### 7. Controller Change Detection
@@ -791,15 +757,20 @@ serviceAccount:
 
 **Exit criteria met:** `database.ResourceCRUD[T]` works end-to-end against both fakes and the emulator. Controllers can be built against fakes without waiting for Phase 2b.
 
-### Phase 2b: Informer Bridge + Listers (Week 2-3)
+### Phase 2b: Informer Bridge + Listers (Week 2-3) ✅ COMPLETE
 **Single PR. Bridges Firestore listeners into the k8s informer/lister machinery. This is the most novel component.**
-- `database/informers/listener_watcher.go` -- Firestore `Snapshots()` -> `watch.Interface`. Error recovery: watcher sends `watch.Error` and exits; Reflector handles re-list + re-watch with backoff.
-- `database/informers/informers.go` -- `SharedIndexInformer` factory with `ListWithContextFunc` (full collection read) and `WatchFuncWithContext` (snapshot listener)
-- `database/listers/` -- indexer-backed listers with indexes: `ByCluster`, `ByNodePool` (drop `ByManagementCluster` — implicit in per-database scoping)
-- Unit tests for listener → watch.Event translation (Added/Modified/Deleted mapping), informer cache population against fakes
-- Integration tests against Firestore emulator: listener reconnection after stream break, per-database isolation (two `mc-*` databases don't cross-pollinate), informer syncs and delivers events within one listener cycle
+- `database/informers/listener_watcher.go` -- `firestoreWatcher` wraps Firestore `collection.Snapshots()` → `watch.Interface`. Maps `DocumentAdded/Modified/Removed` to `watch.Added/Modified/Deleted`. On stream error: sends `watch.Error` with `StatusReasonExpired` and exits; Reflector handles re-list + re-watch with backoff. Context-aware event send prevents deadlock.
+- `database/informers/list_watch.go` -- `listWatchWithoutWatchListSemantics` wrapper (opts out of client-go WatchList mode; Firestore has no bookmark events)
+- `database/informers/informers.go` -- `KubeApplierInformers` interface + factory. `ListWithContextFunc` calls `collection.Documents(ctx).GetAll()` and converts via exported `SnapshotTo*Desire` functions. `WatchFuncWithContext` returns `newFirestoreWatcher`. `RunWithContext` starts 3 informer goroutines.
+- `database/listers/` -- typed listers with `List()` and `Get(documentID)` backed by `cache.Indexer`. No custom indexes (`ByCluster`/`ByNodePool` are backend service concerns, not needed by kube-applier controllers).
+- `database/crud.go` gained exported `SnapshotToApplyDesire`, `SnapshotToDeleteDesire`, `SnapshotToReadDesire` converter functions
+- `database/client.go` gained exported collection name constants (`CollectionApplyDesires`, etc.)
+- Added `k8s.io/client-go v0.36.1` dependency (provides `tools/cache`)
+- 6 unit tests (lister List/Get against populated cache, Get returns NotFoundError, WatchList wrapper, all 3 lister types)
+- 4 integration tests against Firestore emulator (initial sync of pre-existing docs, live create/modify/delete event delivery, per-database isolation, all 3 informer types with KubeContent round-trip)
+- **Key deviation from plan:** Informers are constructed separately via `NewKubeApplierInformers(firestoreClient)`, not attached to `KubeApplierDBClient.Listers()`. The DB client is a CRUD handle; informers wrap the Firestore client directly for `Snapshots()` and `Documents().GetAll()`.
 
-**Exit criteria:** `SharedIndexInformer` backed by Firestore listener works end-to-end against the emulator. Informer syncs, delivers Add/Update/Delete events, and recovers from listener disconnection.
+**Exit criteria met:** `SharedIndexInformer` backed by Firestore listener works end-to-end against the emulator. Informer syncs, delivers Add/Update/Delete events, and recovers from listener disconnection via Reflector re-list.
 
 ### Phase 3: Controllers (Week 3-4)
 **One PR per controller pair.**

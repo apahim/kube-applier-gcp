@@ -93,7 +93,6 @@ and exposes:
 - `ApplyDesires() ResourceCRUD[ApplyDesire]`
 - `DeleteDesires() ResourceCRUD[DeleteDesire]`
 - `ReadDesires() ResourceCRUD[ReadDesire]`
-- `Listers()` — per-database cross-type listers for feeding informers.
 
 `ResourceCRUD[T]` provides flat CRUD operations: `Get`, `List`, `Create`, `Replace`, `Delete`.
 `Replace` uses `firestore.Update` with `LastUpdateTime` precondition for optimistic concurrency —
@@ -124,6 +123,14 @@ The kube-applier binary opens exactly one database — its own — via
 `NewKubeApplierDBClient(ctx, project, "mc-"+mcName)`.
 The backend service constructs clients for each MC database deterministically
 from the MC name; no registry or lister walk is needed.
+
+Informers and listers are constructed separately at app wiring time via
+`informers.NewKubeApplierInformers(firestoreClient)`. The `KubeApplierInformers`
+interface returns both a `SharedIndexInformer` (for event handlers) and a typed lister
+(for `List()` and `Get(documentID)` lookups) per desire type. Internally, each informer
+uses a real Firestore snapshot listener (`collection.Snapshots()`) to stream document
+changes into the k8s cache, and a `listWatchWithoutWatchListSemantics` wrapper to opt
+out of client-go's WatchList bookmark protocol (which Firestore does not support).
 
 The `internal/database/informers`, `internal/database/listers`, and
 `internal/database/listertesting` packages provide the informers and listers for the

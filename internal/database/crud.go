@@ -7,6 +7,8 @@ import (
 	"cloud.google.com/go/firestore"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+
+	kubeapplier "github.com/openshift/kube-applier-gcp/internal/api/kubeapplier"
 )
 
 // desire is the type constraint for firestoreDesireCRUD. It requires
@@ -135,6 +137,21 @@ func (c *firestoreDesireCRUD[T, PT]) Delete(ctx context.Context, documentID stri
 		return fmt.Errorf("firestore delete %s/%s: %w", c.collection, documentID, err)
 	}
 	return nil
+}
+
+// SnapshotToApplyDesire converts a Firestore DocumentSnapshot to an ApplyDesire.
+func SnapshotToApplyDesire(snap *firestore.DocumentSnapshot) (*kubeapplier.ApplyDesire, error) {
+	return snapshotToDesire[kubeapplier.ApplyDesire, *kubeapplier.ApplyDesire](snap)
+}
+
+// SnapshotToDeleteDesire converts a Firestore DocumentSnapshot to a DeleteDesire.
+func SnapshotToDeleteDesire(snap *firestore.DocumentSnapshot) (*kubeapplier.DeleteDesire, error) {
+	return snapshotToDesire[kubeapplier.DeleteDesire, *kubeapplier.DeleteDesire](snap)
+}
+
+// SnapshotToReadDesire converts a Firestore DocumentSnapshot to a ReadDesire.
+func SnapshotToReadDesire(snap *firestore.DocumentSnapshot) (*kubeapplier.ReadDesire, error) {
+	return snapshotToDesire[kubeapplier.ReadDesire, *kubeapplier.ReadDesire](snap)
 }
 
 func snapshotToDesire[T any, PT desire[T]](snap *firestore.DocumentSnapshot) (*T, error) {

@@ -7,9 +7,9 @@ import (
 )
 
 const (
-	collectionApplyDesires  = "applydesires"
-	collectionDeleteDesires = "deletedesires"
-	collectionReadDesires   = "readdesires"
+	CollectionApplyDesires  = "applydesires"
+	CollectionDeleteDesires = "deletedesires"
+	CollectionReadDesires   = "readdesires"
 )
 
 type firestoreKubeApplierDBClient struct {
@@ -26,21 +26,21 @@ func NewFirestoreKubeApplierDBClient(client *firestore.Client) KubeApplierDBClie
 func (c *firestoreKubeApplierDBClient) ApplyDesires() ResourceCRUD[kubeapplier.ApplyDesire] {
 	return &firestoreDesireCRUD[kubeapplier.ApplyDesire, *kubeapplier.ApplyDesire]{
 		client:     c.client,
-		collection: collectionApplyDesires,
+		collection: CollectionApplyDesires,
 	}
 }
 
 func (c *firestoreKubeApplierDBClient) DeleteDesires() ResourceCRUD[kubeapplier.DeleteDesire] {
 	return &firestoreDesireCRUD[kubeapplier.DeleteDesire, *kubeapplier.DeleteDesire]{
 		client:     c.client,
-		collection: collectionDeleteDesires,
+		collection: CollectionDeleteDesires,
 	}
 }
 
 func (c *firestoreKubeApplierDBClient) ReadDesires() ResourceCRUD[kubeapplier.ReadDesire] {
 	return &firestoreDesireCRUD[kubeapplier.ReadDesire, *kubeapplier.ReadDesire]{
 		client:     c.client,
-		collection: collectionReadDesires,
+		collection: CollectionReadDesires,
 	}
 }
 
