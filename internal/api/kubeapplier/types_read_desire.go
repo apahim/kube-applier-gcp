@@ -22,5 +22,13 @@ type ReadDesireSpec struct {
 
 type ReadDesireStatus struct {
 	Conditions  []metav1.Condition    `json:"conditions,omitempty" firestore:"conditions,omitempty"`
-	KubeContent *runtime.RawExtension `json:"kubeContent,omitempty" firestore:"kubeContent,omitempty"`
+	KubeContent *runtime.RawExtension `json:"kubeContent,omitempty" firestore:"-"`
 }
+
+func (d *ReadDesire) GetSpec() any   { return d.Spec }
+func (d *ReadDesire) GetStatus() any { return d.Status }
+
+func (d *ReadDesire) GetSpecKubeContent() *runtime.RawExtension     { return nil }
+func (d *ReadDesire) SetSpecKubeContent(_ *runtime.RawExtension)    {}
+func (d *ReadDesire) GetStatusKubeContent() *runtime.RawExtension   { return d.Status.KubeContent }
+func (d *ReadDesire) SetStatusKubeContent(ext *runtime.RawExtension) { d.Status.KubeContent = ext }

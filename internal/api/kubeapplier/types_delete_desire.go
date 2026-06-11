@@ -2,6 +2,7 @@ package kubeapplier
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 )
 
 // DeleteDesire targets a single Kubernetes object on the management cluster
@@ -22,3 +23,11 @@ type DeleteDesireSpec struct {
 type DeleteDesireStatus struct {
 	Conditions []metav1.Condition `json:"conditions,omitempty" firestore:"conditions,omitempty"`
 }
+
+func (d *DeleteDesire) GetSpec() any   { return d.Spec }
+func (d *DeleteDesire) GetStatus() any { return d.Status }
+
+func (d *DeleteDesire) GetSpecKubeContent() *runtime.RawExtension    { return nil }
+func (d *DeleteDesire) SetSpecKubeContent(_ *runtime.RawExtension)   {}
+func (d *DeleteDesire) GetStatusKubeContent() *runtime.RawExtension  { return nil }
+func (d *DeleteDesire) SetStatusKubeContent(_ *runtime.RawExtension) {}

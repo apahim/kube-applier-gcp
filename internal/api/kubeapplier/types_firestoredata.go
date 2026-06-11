@@ -15,3 +15,7 @@ type FirestoreMetadata struct {
 func (m *FirestoreMetadata) GetDocumentID() string    { return m.DocumentID }
 func (m *FirestoreMetadata) GetUpdateTime() time.Time { return m.UpdateTime }
 func (m *FirestoreMetadata) GetCreateTime() time.Time { return m.CreateTime }
+
+func (m *FirestoreMetadata) SetDocumentID(id string)  { m.DocumentID = id }
+func (m *FirestoreMetadata) SetUpdateTime(t time.Time) { m.UpdateTime = t }
+func (m *FirestoreMetadata) SetCreateTime(t time.Time) { m.CreateTime = t }

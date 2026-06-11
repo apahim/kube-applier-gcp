@@ -18,9 +18,17 @@ type ApplyDesireSpec struct {
 	ClusterID         string                `json:"clusterID" firestore:"clusterID"`
 	NodePoolName      string                `json:"nodePoolName,omitempty" firestore:"nodePoolName,omitempty"`
 	TargetItem        ResourceReference     `json:"targetItem" firestore:"targetItem"`
-	KubeContent       *runtime.RawExtension `json:"kubeContent,omitempty" firestore:"kubeContent,omitempty"`
+	KubeContent       *runtime.RawExtension `json:"kubeContent,omitempty" firestore:"-"`
 }
 
 type ApplyDesireStatus struct {
 	Conditions []metav1.Condition `json:"conditions,omitempty" firestore:"conditions,omitempty"`
 }
+
+func (d *ApplyDesire) GetSpec() any   { return d.Spec }
+func (d *ApplyDesire) GetStatus() any { return d.Status }
+
+func (d *ApplyDesire) GetSpecKubeContent() *runtime.RawExtension    { return d.Spec.KubeContent }
+func (d *ApplyDesire) SetSpecKubeContent(ext *runtime.RawExtension)  { d.Spec.KubeContent = ext }
+func (d *ApplyDesire) GetStatusKubeContent() *runtime.RawExtension   { return nil }
+func (d *ApplyDesire) SetStatusKubeContent(_ *runtime.RawExtension)  {}

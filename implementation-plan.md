@@ -170,7 +170,7 @@ kube-applier-gcp/
 
 **Cooldown gates with real-time listeners:** Firestore snapshot listeners deliver events for the controller's own status writes (each write bumps `UpdateTime`, triggering a listener event). Without cooldown gates, this creates the same feedback loop Cosmos has: write status → event fired → controller re-syncs → writes same status → event fired → ... The cooldown gate breaks this cycle by gating unchanged-spec resyncs. This is why cooldown is retained despite Firestore's real-time nature.
 
-**`Set()` vs `Update()` for status writes:** The plan uses `Set()` with `LastUpdateTime()` precondition for all writes. `Set()` rewrites the entire document (spec + status), even for status-only updates. This is simpler and correct. Firestore charges per write operation (not per byte), so the cost difference is negligible. Status-only `Update()` with field paths is a future optimization if write volume becomes a concern.
+**`Update()` for status writes (REVISED):** The original plan proposed `Set()` with `LastUpdateTime()` precondition, but Firestore's Go SDK `Set` only accepts `SetOption` (e.g., `MergeAll`), not `Precondition`. `Update` accepts `Precondition` and replaces the named field paths. Since all data lives under `spec`, `status`, `spec_kubeContent`, and `status_kubeContent`, updating all four paths is equivalent to a full document overwrite. This also avoids the need to serialize the struct to a map for every write — only `Create` needs the map path (to include `firestore:"-"` tagged KubeContent fields).
 
 ---
 
@@ -209,7 +209,7 @@ type ApplyDesireSpec struct {
     ClusterID         string                `json:"clusterID" firestore:"clusterID"`
     NodePoolName      string                `json:"nodePoolName,omitempty" firestore:"nodePoolName,omitempty"`
     TargetItem        ResourceReference     `json:"targetItem" firestore:"targetItem"`
-    KubeContent       *runtime.RawExtension `json:"kubeContent,omitempty" firestore:"kubeContent,omitempty"`
+    KubeContent       *runtime.RawExtension `json:"kubeContent,omitempty" firestore:"-"`
 }
 
 type ApplyDesireStatus struct {
@@ -218,6 +218,8 @@ type ApplyDesireStatus struct {
 ```
 
 Same pattern for DeleteDesire and ReadDesire (ReadDesire adds `KubeContent` in status).
+`KubeContent` uses `firestore:"-"` because Firestore's codec rejects `runtime.RawExtension`
+(it implements `runtime.Object`). See resolved spike below.
 
 **`runtime.Object` compliance:** All three desire types (plus their List wrappers) must implement `runtime.Object` for the informer cache. Embed `metav1.TypeMeta` with synthetic kind/apiVersion values and implement `DeepCopyObject()`:
 
@@ -254,17 +256,44 @@ type ApplyDesireList struct {
 // Same pattern for DeleteDesireList, ReadDesireList
 ```
 
-**`RawExtension` serialization caveat:** Firestore's Go SDK uses its own codec, not `encoding/json`. `runtime.RawExtension.Raw` (a `[]byte`) would serialize as a Firestore byte array, not as the original JSON structure. Options:
-1. Use `firestore:"-"` tag on `KubeContent` and handle serialization manually in the CRUD layer (marshal to/from `map[string]interface{}`)
-2. Store `KubeContent` as `map[string]interface{}` in the Firestore document and convert at the CRUD boundary
-3. Implement a custom Firestore `ValueEncoder`/`ValueDecoder` for `RawExtension`
+**`RawExtension` serialization — RESOLVED in Phase 2a:**
+Firestore's Go SDK codec rejects `runtime.RawExtension` with `firestore: cannot convert type runtime.Object to value` (the interface check fails, not a byte-array issue as originally anticipated). `metav1.Time` inside `metav1.Condition.LastTransitionTime` works correctly — Firestore handles it as a native timestamp.
 
-**Action:** Spike this in Phase 2a when the Firestore client is available for round-trip testing. Phase 1 uses `firestore:"kubeContent,omitempty"` as a placeholder tag; the tag may change to `firestore:"-"` if manual serialization (Option 1) proves necessary. Option 1 is safest — it keeps the Go type clean and isolates Firestore serialization concerns in the CRUD layer.
+**Decision: Option 1** — `firestore:"-"` tag on `KubeContent` with manual serialization in the CRUD layer (`internal/database/rawext_codec.go`):
+- On write: `json.Unmarshal(RawExtension.Raw)` → `map[string]any` → stored as root-level Firestore fields `spec_kubeContent` and `status_kubeContent`
+- On read: Firestore map → `json.Marshal` → `RawExtension{Raw: bytes}`
+- **Caveat:** JSON key ordering is not preserved through a round-trip (Firestore maps are unordered, `json.Marshal` sorts alphabetically). The data is semantically identical. Controllers compare via `bytes.Equal` on the marshaled output, so a byte mismatch on first write is expected and correct (it triggers the initial status write).
+
+Each desire type implements `KubeContentAccessor` (get/set for spec and status `KubeContent`). Types without `KubeContent` (DeleteDesire) return nil from both getters; the codec skips serialization.
 
 ### 3. Database Core Interfaces
 
 ```go
 // internal/database/types.go
+
+// FirestoreMetadataAccessor — generic access to server-managed metadata.
+// Implemented by FirestoreMetadata (embedded in all desire types).
+type FirestoreMetadataAccessor interface {
+    GetDocumentID() string;  SetDocumentID(string)
+    GetUpdateTime() time.Time; SetUpdateTime(time.Time)
+    GetCreateTime() time.Time; SetCreateTime(time.Time)
+}
+
+// SpecStatusAccessor — generic access to the two data fields stored in Firestore.
+// Used by Replace (which calls firestore.Update on "spec" and "status" paths).
+type SpecStatusAccessor interface {
+    GetSpec() any
+    GetStatus() any
+}
+
+// KubeContentAccessor — manual RawExtension serialization (see resolved spike above).
+type KubeContentAccessor interface {
+    GetSpecKubeContent() *runtime.RawExtension
+    SetSpecKubeContent(*runtime.RawExtension)
+    GetStatusKubeContent() *runtime.RawExtension
+    SetStatusKubeContent(*runtime.RawExtension)
+}
+
 type ResourceCRUD[T any] interface {
     Get(ctx context.Context, documentID string) (*T, error)
     List(ctx context.Context) ([]*T, error)
@@ -277,16 +306,14 @@ type KubeApplierDBClient interface {
     ApplyDesires() ResourceCRUD[kubeapplier.ApplyDesire]
     DeleteDesires() ResourceCRUD[kubeapplier.DeleteDesire]
     ReadDesires() ResourceCRUD[kubeapplier.ReadDesire]
-    Listers() KubeApplierListers
     Close() error
-}
-
-type KubeApplierListers interface {
-    ApplyDesires() GlobalLister[kubeapplier.ApplyDesire]
-    DeleteDesires() GlobalLister[kubeapplier.DeleteDesire]
-    ReadDesires() GlobalLister[kubeapplier.ReadDesire]
+    // Listers() is added in Phase 2b when the informer bridge exists.
 }
 ```
+
+`Listers()` is deferred to Phase 2b — it returns informer-backed listers which depend on the
+Firestore snapshot listener bridge. The `KubeApplierDBClient` interface gains the method when
+that machinery is implemented.
 
 **Deliberate simplification from ARO HCP** (see "Deliberately eliminated" table above):
 - **Drops `ResourceParent` and per-parent CRUD scoping** — Cosmos requires partition-keyed routing through `ForCluster()`/`ForNodePool()` methods. Firestore's per-database isolation eliminates this; controllers call `ResourceCRUD[T]` directly.
@@ -298,37 +325,43 @@ type KubeApplierListers interface {
 
 ```go
 // internal/database/crud.go
-type firestoreDesireCRUD[T any] struct {
+//
+// The type constraint requires FirestoreMetadataAccessor, SpecStatusAccessor,
+// KubeContentAccessor, and DeepCopy — shared with the in-memory fake.
+type firestoreDesireCRUD[T any, PT desire[T]] struct {
     client     *firestore.Client
     collection string // "applydesires", "deletedesires", "readdesires"
 }
+```
 
-func (c *firestoreDesireCRUD[T]) Get(ctx context.Context, documentID string) (*T, error) {
-    snap, err := c.client.Collection(c.collection).Doc(documentID).Get(ctx)
-    if err != nil {
-        if status.Code(err) == codes.NotFound {
-            return nil, NewNotFoundError()
-        }
-        return nil, fmt.Errorf("firestore get %s/%s: %w", c.collection, documentID, err)
-    }
-    return snapshotToDesire[T](snap)
-}
+**`Replace` uses `Update`, not `Set`:** Firestore's `Set` method accepts `SetOption`
+(e.g., `MergeAll`) but NOT `Precondition` (e.g., `LastUpdateTime`). `Update` accepts
+`Precondition` and replaces only the named field paths. Since the only data fields are
+`spec` and `status` (plus the manually serialized `spec_kubeContent`/`status_kubeContent`),
+updating all four paths is equivalent to a full document overwrite.
 
-func (c *firestoreDesireCRUD[T]) Replace(ctx context.Context, obj *T) (*T, error) {
-    meta := getFirestoreMetadata(obj)
-    ref := c.client.Collection(c.collection).Doc(meta.DocumentID)
-    // Optimistic concurrency: only succeed if document hasn't changed since last read
-    wr, err := ref.Set(ctx, obj, firestore.LastUpdateTime(meta.UpdateTime))
-    if err != nil {
-        if status.Code(err) == codes.FailedPrecondition {
-            return nil, NewPreconditionFailedError()
-        }
-        return nil, fmt.Errorf("firestore replace %s/%s: %w", c.collection, meta.DocumentID, err)
+```go
+func (c *firestoreDesireCRUD[T, PT]) Replace(ctx context.Context, obj *T) (*T, error) {
+    pt := PT(obj)
+    docID := pt.GetDocumentID()
+    updates := []firestore.Update{
+        {Path: "spec", Value: pt.GetSpec()},
+        {Path: "status", Value: pt.GetStatus()},
     }
-    setFirestoreMetadata(obj, meta.DocumentID, wr.UpdateTime)
-    return obj, nil
+    kubeUpdates, _ := kubeContentWriteUpdates(pt) // from rawext_codec.go
+    updates = append(updates, kubeUpdates...)
+    wr, err := c.col().Doc(docID).Update(ctx, updates, firestore.LastUpdateTime(pt.GetUpdateTime()))
+    // ... error mapping: FailedPrecondition, NotFound
 }
 ```
+
+**`Create` uses `map[string]any`:** Because `KubeContent` is `firestore:"-"`, passing the
+struct directly to `DocRef.Create()` would silently drop it. Instead, the CRUD layer builds
+a `map[string]any{"spec": ..., "status": ..., "spec_kubeContent": ...}` and passes that.
+
+**`snapshotToDesire`** calls `snap.DataTo(&obj)` for the struct fields, then
+`kubeContentReadFromSnapshot(pt, snap.Data())` to reconstruct the `RawExtension` fields
+from the root-level map entries.
 
 ### 5. Firestore Snapshot Listener -> Informer Bridge
 
@@ -742,17 +775,21 @@ serviceAccount:
 - Unit tests for type marshaling, DeepCopy isolation, key construction, error classification, conditions, cooldown
 - **Deferred to Phase 2a:** `RawExtension` / `metav1.Time` Firestore round-trip spike (requires Firestore client or emulator). Phase 1 uses `firestore:"kubeContent,omitempty"` as placeholder tag.
 
-### Phase 2a: Database CRUD + Fakes (Week 2)
+### Phase 2a: Database CRUD + Fakes (Week 2) ✅ COMPLETE
 **Single PR. Implements Firestore CRUD and in-memory fakes. No informers yet — this is the data access layer only.**
-- **Spike first: `RawExtension` / `metav1.Time` Firestore round-trip** — test that `runtime.RawExtension` and `metav1.Time` (inside `metav1.Condition.LastTransitionTime`) survive Firestore's codec without data corruption using the emulator. Decide whether to keep `firestore:"kubeContent,omitempty"` or switch to `firestore:"-"` with manual serialization. Update desire type tags accordingly.
-- `database/client.go` -- `KubeApplierDBClient` interface + `firestoreKubeApplierDBClient` impl
-- `database/crud.go` -- `FirestoreDesireCRUD[T]` with `Get`, `List`, `Create`, `Replace` (with `LastUpdateTime`), `Delete`. Handle `RawExtension` serialization per spike decision.
-- `database/errors.go` -- (already stubbed in Phase 1, wire into CRUD here)
-- `database/listertesting/` -- in-memory fakes with `UpdateTime` tracking and `codes.FailedPrecondition` simulation
-- Unit tests for CRUD against fakes: Get, List, Create, Replace (happy path + precondition conflict), Delete, NotFound
-- Integration tests against Firestore emulator: round-trip serialization (especially `RawExtension` and `metav1.Time`), optimistic concurrency conflict (two concurrent `Replace()` calls)
+- **Spike resolved:** `RawExtension` fails with `firestore: cannot convert type runtime.Object to value`. Fixed with `firestore:"-"` + manual serialization in `rawext_codec.go`. `metav1.Time` works natively. JSON key ordering is not preserved (Firestore maps are unordered) but data is semantically identical.
+- `database/types.go` -- `ResourceCRUD[T]`, `FirestoreMetadataAccessor`, `SpecStatusAccessor`, `KubeContentAccessor`, `KubeApplierDBClient` interfaces
+- `database/client.go` -- `firestoreKubeApplierDBClient` impl (scoped to three collections)
+- `database/crud.go` -- `firestoreDesireCRUD[T, PT]` with `Get`, `List`, `Create`, `Replace` (using `Update` + `LastUpdateTime`), `Delete`
+- `database/rawext_codec.go` -- manual `RawExtension` serialization (JSON ↔ `map[string]any`)
+- `database/errors.go` -- (Phase 1, wired into CRUD)
+- `database/listertesting/fake_crud.go` -- generic `FakeCRUD[T, PT]` with deterministic `UpdateTime` (monotonic counter)
+- `database/listertesting/fake_client.go` -- `FakeKubeApplierDBClient` wrapping three FakeCRUDs
+- 18 unit tests against fakes + 11 integration tests against Firestore emulator (all pass)
+- Desire types gained: `GetSpec()/GetStatus()`, `GetSpecKubeContent()/SetSpecKubeContent()` etc., `SetDocumentID()/SetUpdateTime()/SetCreateTime()`
+- **Key deviation from plan:** `Replace` uses `firestore.Update` (not `Set`) because `Set` does not accept `LastUpdateTime` precondition. `Create` passes `map[string]any` (not struct) to include manually serialized KubeContent.
 
-**Exit criteria:** `database.ResourceCRUD[T]` works end-to-end against both fakes and the emulator. Controllers can be built against fakes without waiting for Phase 2b.
+**Exit criteria met:** `database.ResourceCRUD[T]` works end-to-end against both fakes and the emulator. Controllers can be built against fakes without waiting for Phase 2b.
 
 ### Phase 2b: Informer Bridge + Listers (Week 2-3)
 **Single PR. Bridges Firestore listeners into the k8s informer/lister machinery. This is the most novel component.**

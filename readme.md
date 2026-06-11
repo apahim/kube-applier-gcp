@@ -96,9 +96,12 @@ and exposes:
 - `Listers()` — per-database cross-type listers for feeding informers.
 
 `ResourceCRUD[T]` provides flat CRUD operations: `Get`, `List`, `Create`, `Replace`, `Delete`.
-`Replace` uses Firestore's `LastUpdateTime` precondition for optimistic concurrency —
+`Replace` uses `firestore.Update` with `LastUpdateTime` precondition for optimistic concurrency —
 if the document has changed since the last read, the write fails with `codes.FailedPrecondition`
-and the controller retries with a fresh read.
+and the controller retries with a fresh read. `Replace` uses `Update` (not `Set`) because
+Firestore's `Set` method does not accept a `LastUpdateTime` precondition; `Update` replaces
+the `spec` and `status` fields entirely, which is equivalent to a full document overwrite
+since those are the only data fields.
 
 Each desire type carries a `FirestoreMetadata` struct with:
 - `DocumentID` — the Firestore document path
@@ -107,6 +110,15 @@ Each desire type carries a `FirestoreMetadata` struct with:
 
 These fields use `firestore:"-"` tags and are populated from the `DocumentSnapshot`
 server fields, not stored as document data.
+
+`KubeContent` fields (`ApplyDesireSpec.KubeContent`, `ReadDesireStatus.KubeContent`)
+also use `firestore:"-"` tags because Firestore's Go SDK codec cannot serialize
+`runtime.RawExtension` (it implements `runtime.Object`, which the codec rejects).
+The CRUD layer handles these manually: on write, `RawExtension.Raw` is unmarshaled
+to `map[string]any` and stored as separate document fields (`spec_kubeContent`,
+`status_kubeContent`); on read, the map is marshaled back to JSON bytes.
+This means JSON key ordering is not preserved through a round-trip (Firestore maps
+are unordered), but the data is semantically identical.
 
 The kube-applier binary opens exactly one database — its own — via
 `NewKubeApplierDBClient(ctx, project, "mc-"+mcName)`.
