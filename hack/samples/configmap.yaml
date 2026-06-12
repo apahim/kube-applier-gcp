@@ -4,5 +4,5 @@ metadata:
   name: kube-applier-test
   namespace: default
 data:
-  greeting: "hello from kube-applier!!!"
+  greeting: "hello from kube-applier"
   environment: "dev-local"
