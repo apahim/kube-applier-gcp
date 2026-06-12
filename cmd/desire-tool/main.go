@@ -259,12 +259,17 @@ func newCreateReadCmd() *cobra.Command {
 // --- update ---
 
 func newUpdateApplyCmd() *cobra.Command {
-	var docID, filePath string
+	var f docIDFlags
+	var filePath string
 
 	cmd := &cobra.Command{
 		Use:   "update-apply",
 		Short: "Update an existing ApplyDesire's manifest (read-modify-write with optimistic concurrency)",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			docID, err := f.resolve()
+			if err != nil {
+				return err
+			}
 			ctx := context.Background()
 			specsDB, _, cleanup := twoDBClients(ctx)
 			defer cleanup()
@@ -303,22 +308,25 @@ func newUpdateApplyCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&docID, "doc-id", "", "Document ID (required)")
+	f.addFlags(cmd)
 	cmd.Flags().StringVar(&filePath, "file", "", "Path to updated YAML/JSON manifest (required)")
-	cmd.MarkFlagRequired("doc-id")
 	cmd.MarkFlagRequired("file")
 
 	return cmd
 }
 
 func newUpdateReadCmd() *cobra.Command {
-	var docID string
-	var group, version, resource, namespace, resourceName string
+	var f docIDFlags
+	var newGroup, newVersion, newResource, newNamespace, newResourceName string
 
 	cmd := &cobra.Command{
 		Use:   "update-read",
 		Short: "Update an existing ReadDesire's target (read-modify-write with optimistic concurrency)",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			docID, err := f.resolve()
+			if err != nil {
+				return err
+			}
 			ctx := context.Background()
 			specsDB, _, cleanup := twoDBClients(ctx)
 			defer cleanup()
@@ -329,11 +337,11 @@ func newUpdateReadCmd() *cobra.Command {
 			}
 
 			existing.Spec.TargetItem = kubeapplier.ResourceReference{
-				Group:     group,
-				Version:   version,
-				Resource:  resource,
-				Namespace: namespace,
-				Name:      resourceName,
+				Group:     newGroup,
+				Version:   newVersion,
+				Resource:  newResource,
+				Namespace: newNamespace,
+				Name:      newResourceName,
 			}
 
 			updated, err := specsDB.ReadDesireStatus().Replace(ctx, existing)
@@ -342,21 +350,20 @@ func newUpdateReadCmd() *cobra.Command {
 			}
 
 			fmt.Printf("Updated ReadDesire: %s\n", updated.GetDocumentID())
-			fmt.Printf("  Target: %s/%s %s/%s\n", version, resource, namespace, resourceName)
+			fmt.Printf("  Target: %s/%s %s/%s\n", newVersion, newResource, newNamespace, newResourceName)
 			return nil
 		},
 	}
 
-	cmd.Flags().StringVar(&docID, "doc-id", "", "Document ID (required)")
-	cmd.Flags().StringVar(&group, "group", "", "API group (empty for core)")
-	cmd.Flags().StringVar(&version, "version", "", "API version (required)")
-	cmd.Flags().StringVar(&resource, "resource", "", "Resource type (required)")
-	cmd.Flags().StringVar(&namespace, "namespace", "", "Namespace (empty for cluster-scoped)")
-	cmd.Flags().StringVar(&resourceName, "resource-name", "", "Resource name (required)")
-	cmd.MarkFlagRequired("doc-id")
-	cmd.MarkFlagRequired("version")
-	cmd.MarkFlagRequired("resource")
-	cmd.MarkFlagRequired("resource-name")
+	f.addFlags(cmd)
+	cmd.Flags().StringVar(&newGroup, "new-group", "", "New API group (empty for core)")
+	cmd.Flags().StringVar(&newVersion, "new-version", "", "New API version (required)")
+	cmd.Flags().StringVar(&newResource, "new-resource", "", "New resource type (required)")
+	cmd.Flags().StringVar(&newNamespace, "new-namespace", "", "New namespace (empty for cluster-scoped)")
+	cmd.Flags().StringVar(&newResourceName, "new-resource-name", "", "New resource name (required)")
+	cmd.MarkFlagRequired("new-version")
+	cmd.MarkFlagRequired("new-resource")
+	cmd.MarkFlagRequired("new-resource-name")
 
 	return cmd
 }
@@ -364,12 +371,16 @@ func newUpdateReadCmd() *cobra.Command {
 // --- get ---
 
 func newGetApplyCmd() *cobra.Command {
-	var docID string
+	var f docIDFlags
 
 	cmd := &cobra.Command{
 		Use:   "get-apply",
 		Short: "Get a single ApplyDesire (spec from specs-db, status from status-db)",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			docID, err := f.resolve()
+			if err != nil {
+				return err
+			}
 			ctx := context.Background()
 			specsDB, statusDB, cleanup := twoDBClients(ctx)
 			defer cleanup()
@@ -377,19 +388,21 @@ func newGetApplyCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&docID, "doc-id", "", "Document ID (required)")
-	cmd.MarkFlagRequired("doc-id")
-
+	f.addFlags(cmd)
 	return cmd
 }
 
 func newGetDeleteCmd() *cobra.Command {
-	var docID string
+	var f docIDFlags
 
 	cmd := &cobra.Command{
 		Use:   "get-delete",
 		Short: "Get a single DeleteDesire (spec from specs-db, status from status-db)",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			docID, err := f.resolve()
+			if err != nil {
+				return err
+			}
 			ctx := context.Background()
 			specsDB, statusDB, cleanup := twoDBClients(ctx)
 			defer cleanup()
@@ -397,19 +410,21 @@ func newGetDeleteCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&docID, "doc-id", "", "Document ID (required)")
-	cmd.MarkFlagRequired("doc-id")
-
+	f.addFlags(cmd)
 	return cmd
 }
 
 func newGetReadCmd() *cobra.Command {
-	var docID string
+	var f docIDFlags
 
 	cmd := &cobra.Command{
 		Use:   "get-read",
 		Short: "Get a single ReadDesire (spec from specs-db, status from status-db)",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			docID, err := f.resolve()
+			if err != nil {
+				return err
+			}
 			ctx := context.Background()
 			specsDB, statusDB, cleanup := twoDBClients(ctx)
 			defer cleanup()
@@ -417,9 +432,7 @@ func newGetReadCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&docID, "doc-id", "", "Document ID (required)")
-	cmd.MarkFlagRequired("doc-id")
-
+	f.addFlags(cmd)
 	return cmd
 }
 
@@ -598,12 +611,16 @@ func listRead(ctx context.Context, specsDB database.KubeApplierDBClient) error {
 // --- delete ---
 
 func newDeleteApplyCmd() *cobra.Command {
-	var docID string
+	var f docIDFlags
 
 	cmd := &cobra.Command{
 		Use:   "delete-apply",
 		Short: "Delete an ApplyDesire document from both specs and status databases",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			docID, err := f.resolve()
+			if err != nil {
+				return err
+			}
 			ctx := context.Background()
 			specsDB, statusDB, cleanup := twoDBClients(ctx)
 			defer cleanup()
@@ -627,19 +644,21 @@ func newDeleteApplyCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&docID, "doc-id", "", "Document ID (required)")
-	cmd.MarkFlagRequired("doc-id")
-
+	f.addFlags(cmd)
 	return cmd
 }
 
 func newDeleteDeleteCmd() *cobra.Command {
-	var docID string
+	var f docIDFlags
 
 	cmd := &cobra.Command{
 		Use:   "delete-delete",
 		Short: "Delete a DeleteDesire document from both specs and status databases",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			docID, err := f.resolve()
+			if err != nil {
+				return err
+			}
 			ctx := context.Background()
 			specsDB, statusDB, cleanup := twoDBClients(ctx)
 			defer cleanup()
@@ -663,19 +682,21 @@ func newDeleteDeleteCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&docID, "doc-id", "", "Document ID (required)")
-	cmd.MarkFlagRequired("doc-id")
-
+	f.addFlags(cmd)
 	return cmd
 }
 
 func newDeleteReadCmd() *cobra.Command {
-	var docID string
+	var f docIDFlags
 
 	cmd := &cobra.Command{
 		Use:   "delete-read",
 		Short: "Delete a ReadDesire document from both specs and status databases",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			docID, err := f.resolve()
+			if err != nil {
+				return err
+			}
 			ctx := context.Background()
 			specsDB, statusDB, cleanup := twoDBClients(ctx)
 			defer cleanup()
@@ -699,10 +720,40 @@ func newDeleteReadCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&docID, "doc-id", "", "Document ID (required)")
-	cmd.MarkFlagRequired("doc-id")
-
+	f.addFlags(cmd)
 	return cmd
+}
+
+// --- doc-id resolution ---
+
+type docIDFlags struct {
+	docID        string
+	taskKey      string
+	group        string
+	version      string
+	resource     string
+	namespace    string
+	resourceName string
+}
+
+func (f *docIDFlags) addFlags(cmd *cobra.Command) {
+	cmd.Flags().StringVar(&f.docID, "doc-id", "", "Document ID (UUID); alternative to --task-key + GVR flags")
+	cmd.Flags().StringVar(&f.taskKey, "task-key", "", "Task key for UUID v5 document ID derivation")
+	cmd.Flags().StringVar(&f.group, "group", "", "API group (empty for core)")
+	cmd.Flags().StringVar(&f.version, "version", "", "API version")
+	cmd.Flags().StringVar(&f.resource, "resource", "", "Resource type")
+	cmd.Flags().StringVar(&f.namespace, "namespace", "", "Namespace (empty for cluster-scoped)")
+	cmd.Flags().StringVar(&f.resourceName, "resource-name", "", "Resource name")
+}
+
+func (f *docIDFlags) resolve() (string, error) {
+	if f.docID != "" {
+		return f.docID, nil
+	}
+	if f.taskKey == "" || f.version == "" || f.resource == "" || f.resourceName == "" {
+		return "", fmt.Errorf("provide either --doc-id or all of --task-key, --version, --resource, --resource-name")
+	}
+	return desireid.NewDocumentID(f.taskKey, f.group, f.version, f.resource, f.namespace, f.resourceName), nil
 }
 
 // --- helpers ---
