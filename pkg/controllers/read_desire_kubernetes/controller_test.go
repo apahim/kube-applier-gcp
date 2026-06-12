@@ -131,7 +131,7 @@ func TestSyncOnce_TargetExists(t *testing.T) {
 		target:     configMapTarget("cm1"),
 		namespaced: true,
 		informer:   syncedInformer(cm),
-		fetcher:    &readDesireFetcher{crud: crudWithDesire(t, desire)},
+		fetcher:    &readDesireStatusFetcher{crud: crudWithDesire(t, desire)},
 		writer:     writer,
 	}
 
@@ -166,7 +166,7 @@ func TestSyncOnce_TargetAbsent_AfterSync(t *testing.T) {
 		target:     configMapTarget("cm1"),
 		namespaced: true,
 		informer:   syncedInformer(), // empty store
-		fetcher:    &readDesireFetcher{crud: crudWithDesire(t, desire)},
+		fetcher:    &readDesireStatusFetcher{crud: crudWithDesire(t, desire)},
 		writer:     writer,
 	}
 
@@ -198,7 +198,7 @@ func TestSyncOnce_ByteEqual_NoOp(t *testing.T) {
 		target:     configMapTarget("cm1"),
 		namespaced: true,
 		informer:   syncedInformer(cm),
-		fetcher:    &readDesireFetcher{crud: crudWithDesire(t, desire)},
+		fetcher:    &readDesireStatusFetcher{crud: crudWithDesire(t, desire)},
 		writer:     writer,
 	}
 
@@ -222,7 +222,7 @@ func TestSyncOnce_NotSynced_Skips(t *testing.T) {
 		key:      testKey(),
 		target:   configMapTarget("cm1"),
 		informer: unsyncedInformer(),
-		fetcher:  &readDesireFetcher{crud: crudWithDesire(t, desire)},
+		fetcher:  &readDesireStatusFetcher{crud: crudWithDesire(t, desire)},
 		writer:   writer,
 	}
 
@@ -243,7 +243,7 @@ func TestSyncOnce_DesireNotFound(t *testing.T) {
 		key:      testKey(),
 		target:   configMapTarget("cm1"),
 		informer: syncedInformer(),
-		fetcher:  &readDesireFetcher{crud: crud},
+		fetcher:  &readDesireStatusFetcher{crud: crud},
 		writer:   writer,
 	}
 
@@ -278,7 +278,7 @@ func TestSyncOnce_ClusterScoped(t *testing.T) {
 		target:     target,
 		namespaced: false,
 		informer:   &fakeInformer{indexer: indexer, synced: true},
-		fetcher:    &readDesireFetcher{crud: crudWithDesire(t, desire)},
+		fetcher:    &readDesireStatusFetcher{crud: crudWithDesire(t, desire)},
 		writer:     writer,
 	}
 

@@ -1,14 +1,11 @@
 // Package desirestatuswriter is the generic "read-mutate-replace" helper that
 // writes back the .status section of kube-applier *Desire Firestore documents
-// (ApplyDesire, DeleteDesire, ReadDesire).
+// (ApplyDesire, DeleteDesire, ReadDesire) to the status database.
 //
-// The kube-applier never creates desires (the backend does), so the helper
-// deliberately omits the create-if-missing branch.
-//
-// Callers supply two collaborators as named structs implementing Fetcher
-// and Replacer. Fetcher implementations MUST go to a live Firestore client
-// rather than a cached lister: the Replacer's UpdateTime precondition check
-// needs the freshest revision available.
+// With the two-database architecture, the status document may not exist yet
+// when a spec is first reconciled. The helper uses create-or-replace: it
+// fetches the status doc, and if not found, creates a new one with the
+// mutated status; otherwise it replaces the existing one.
 package desirestatuswriter
 
 import (
@@ -33,14 +30,19 @@ func init() {
 }
 
 // Fetcher reads the current state of a single desire by a controller-defined
-// typed key.
+// typed key. For status updates, this fetches from the status database.
 type Fetcher[T any, K comparable] interface {
 	Fetch(ctx context.Context, key K) (*T, error)
 }
 
-// Replacer writes back a fully-populated desire.
+// Replacer writes back a fully-populated desire to the status database.
 type Replacer[T any] interface {
 	Replace(ctx context.Context, desired *T) error
+}
+
+// Creator creates a new status document when one doesn't exist yet.
+type Creator[T any] interface {
+	Create(ctx context.Context, obj *T) error
 }
 
 // DeepCopyable is the constraint on the pointer-type parameter that lets the
@@ -62,28 +64,31 @@ type StatusWriter[T any, K comparable] interface {
 	UpdateStatus(ctx context.Context, key K, mutate MutateFunc[T]) error
 }
 
-// New returns a StatusWriter that fetches via fetcher and writes via replacer.
+// New returns a StatusWriter that fetches via fetcher, writes via replacer,
+// and creates new status documents via creator when the status doc doesn't
+// exist yet.
 func New[T any, K comparable, PT DeepCopyable[T]](
-	fetcher Fetcher[T, K], replacer Replacer[T],
+	fetcher Fetcher[T, K], replacer Replacer[T], creator Creator[T],
 ) StatusWriter[T, K] {
-	return &writer[T, K, PT]{fetcher: fetcher, replacer: replacer}
+	return &writer[T, K, PT]{fetcher: fetcher, replacer: replacer, creator: creator}
 }
 
 type writer[T any, K comparable, PT DeepCopyable[T]] struct {
 	fetcher  Fetcher[T, K]
 	replacer Replacer[T]
+	creator  Creator[T]
 }
 
 func (w *writer[T, K, PT]) UpdateStatus(ctx context.Context, key K, mutate MutateFunc[T]) error {
 	existing, err := w.fetcher.Fetch(ctx, key)
 	if err != nil {
 		if database.IsNotFoundError(err) {
-			return nil
+			return w.createInitialStatus(ctx, key, mutate)
 		}
 		return fmt.Errorf("fetch %v: %w", key, err)
 	}
 	if existing == nil {
-		return nil
+		return w.createInitialStatus(ctx, key, mutate)
 	}
 
 	desired := PT(existing).DeepCopy()
@@ -95,6 +100,15 @@ func (w *writer[T, K, PT]) UpdateStatus(ctx context.Context, key K, mutate Mutat
 
 	if err := w.replacer.Replace(ctx, desired); err != nil {
 		return fmt.Errorf("replace status for %v: %w", key, err)
+	}
+	return nil
+}
+
+func (w *writer[T, K, PT]) createInitialStatus(ctx context.Context, key K, mutate MutateFunc[T]) error {
+	var initial T
+	mutate(&initial)
+	if err := w.creator.Create(ctx, &initial); err != nil {
+		return fmt.Errorf("create initial status for %v: %w", key, err)
 	}
 	return nil
 }

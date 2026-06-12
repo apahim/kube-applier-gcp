@@ -291,8 +291,8 @@ func TestClassifyAsDegraded_NilNotDegraded(t *testing.T) {
 func TestSyncOnce_DesireNotFound(t *testing.T) {
 	ctx := context.Background()
 	crud := listertesting.NewFakeCRUD[kubeapplier.ApplyDesire, *kubeapplier.ApplyDesire]()
-	fetcher := &applyDesireFetcher{crud: crud}
-	c := &ApplyDesireController{fetcher: fetcher}
+	specFetcher := &applyDesireSpecFetcher{reader: crud}
+	c := &ApplyDesireController{specFetcher: specFetcher}
 
 	key := keys.ApplyDesireKey{ClusterID: "c1", Name: "cluster1--cm1"}
 	if err := c.SyncOnce(ctx, key); err != nil {
@@ -311,21 +311,23 @@ func TestSyncOnce_Success(t *testing.T) {
 		}}, nil
 	})
 
-	crud := listertesting.NewFakeCRUD[kubeapplier.ApplyDesire, *kubeapplier.ApplyDesire]()
+	specCRUD := listertesting.NewFakeCRUD[kubeapplier.ApplyDesire, *kubeapplier.ApplyDesire]()
+	statusCRUD := listertesting.NewFakeCRUD[kubeapplier.ApplyDesire, *kubeapplier.ApplyDesire]()
 	d := newApplyDesire(t, "cm1", configMapTarget("cm1"), validConfigMapJSON("cm1"))
-	created, err := crud.Create(ctx, d)
+	created, err := specCRUD.Create(ctx, d)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 
-	fetcher := &applyDesireFetcher{crud: crud}
+	specFetcher := &applyDesireSpecFetcher{reader: specCRUD}
+	statusFetcher := &applyDesireStatusFetcher{crud: statusCRUD}
 	writer := desirestatuswriter.New[kubeapplier.ApplyDesire, keys.ApplyDesireKey, *kubeapplier.ApplyDesire](
-		fetcher, &applyDesireReplacer{crud: crud},
+		statusFetcher, &applyDesireReplacer{crud: statusCRUD}, &applyDesireCreator{crud: statusCRUD},
 	)
 	c := &ApplyDesireController{
-		fetcher: fetcher,
-		dyn:     dyn,
-		writer:  writer,
+		specFetcher: specFetcher,
+		dyn:         dyn,
+		writer:      writer,
 	}
 
 	key := mustKey(t, created)
@@ -333,7 +335,7 @@ func TestSyncOnce_Success(t *testing.T) {
 		t.Fatalf("SyncOnce: %v", err)
 	}
 
-	updated, err := crud.Get(ctx, created.DocumentID)
+	updated, err := statusCRUD.Get(ctx, created.DocumentID)
 	if err != nil {
 		t.Fatalf("get after sync: %v", err)
 	}
@@ -354,20 +356,22 @@ func TestSyncOnce_Success(t *testing.T) {
 func TestSyncOnce_PreCheckError_SetsConditions(t *testing.T) {
 	ctx := context.Background()
 
-	crud := listertesting.NewFakeCRUD[kubeapplier.ApplyDesire, *kubeapplier.ApplyDesire]()
+	specCRUD := listertesting.NewFakeCRUD[kubeapplier.ApplyDesire, *kubeapplier.ApplyDesire]()
+	statusCRUD := listertesting.NewFakeCRUD[kubeapplier.ApplyDesire, *kubeapplier.ApplyDesire]()
 	d := newApplyDesire(t, "cm1", kubeapplier.ResourceReference{Version: "v1", Resource: "configmaps"}, validConfigMapJSON("cm1"))
-	created, err := crud.Create(ctx, d)
+	created, err := specCRUD.Create(ctx, d)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 
-	fetcher := &applyDesireFetcher{crud: crud}
+	specFetcher := &applyDesireSpecFetcher{reader: specCRUD}
+	statusFetcher := &applyDesireStatusFetcher{crud: statusCRUD}
 	writer := desirestatuswriter.New[kubeapplier.ApplyDesire, keys.ApplyDesireKey, *kubeapplier.ApplyDesire](
-		fetcher, &applyDesireReplacer{crud: crud},
+		statusFetcher, &applyDesireReplacer{crud: statusCRUD}, &applyDesireCreator{crud: statusCRUD},
 	)
 	c := &ApplyDesireController{
-		fetcher: fetcher,
-		writer:  writer,
+		specFetcher: specFetcher,
+		writer:      writer,
 	}
 
 	key := mustKey(t, created)
@@ -375,7 +379,7 @@ func TestSyncOnce_PreCheckError_SetsConditions(t *testing.T) {
 		t.Fatalf("SyncOnce: %v", err)
 	}
 
-	updated, err := crud.Get(ctx, created.DocumentID)
+	updated, err := statusCRUD.Get(ctx, created.DocumentID)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -474,7 +478,7 @@ func TestProcessNext_ErrorRequeues(t *testing.T) {
 	fetcher := &errFetcher{err: errors.New("fetch failed")}
 	// Use a zero-delay rate limiter so AddRateLimited is immediate.
 	c := &ApplyDesireController{
-		fetcher: fetcher,
+		specFetcher: fetcher,
 		queue: workqueue.NewTypedRateLimitingQueueWithConfig(
 			workqueue.NewTypedMaxOfRateLimiter[keys.ApplyDesireKey](),
 			workqueue.TypedRateLimitingQueueConfig[keys.ApplyDesireKey]{Name: "test"},

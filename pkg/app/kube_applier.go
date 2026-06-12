@@ -132,17 +132,23 @@ func (o *Options) runControllersUnderLeaderElection(
 	readInformer, _ := o.Informers.ReadDesires()
 
 	applyCtl, err := apply_desire.NewApplyDesireController(
-		applyInformer, o.DynamicClient, o.KubeApplierDBClient.ApplyDesires(), apply_desire.Config{})
+		applyInformer, o.DynamicClient,
+		o.KubeApplierDBClient.ApplyDesireSpecs(), o.KubeApplierDBClient.ApplyDesireStatus(),
+		apply_desire.Config{})
 	if err != nil {
 		return fmt.Errorf("apply controller: %w", err)
 	}
 	deleteCtl, err := delete_desire.NewDeleteDesireController(
-		deleteInformer, o.DynamicClient, o.KubeApplierDBClient.DeleteDesires(), delete_desire.Config{})
+		deleteInformer, o.DynamicClient,
+		o.KubeApplierDBClient.DeleteDesireSpecs(), o.KubeApplierDBClient.DeleteDesireStatus(),
+		delete_desire.Config{})
 	if err != nil {
 		return fmt.Errorf("delete controller: %w", err)
 	}
 	readMgr, err := read_desire_manager.NewReadDesireInformerManagingController(
-		readInformer, o.DynamicClient, o.KubeApplierDBClient.ReadDesires(), read_desire_manager.Config{})
+		readInformer, o.DynamicClient,
+		o.KubeApplierDBClient.ReadDesireSpecs(), o.KubeApplierDBClient.ReadDesireStatus(),
+		read_desire_manager.Config{})
 	if err != nil {
 		return fmt.Errorf("read manager: %w", err)
 	}

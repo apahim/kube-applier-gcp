@@ -131,7 +131,7 @@ func newTestController(
 		writer = noopStatusWriter[kubeapplier.ReadDesire, keys.ReadDesireKey]{}
 	}
 	return &ReadDesireInformerManagingController{
-		fetcher: &readDesireFetcher{crud: crud},
+		specFetcher: &readDesireSpecFetcher{reader: crud},
 		factory: factory,
 		running: map[keys.ReadDesireKey]*runningInstance{},
 		writer:  writer,

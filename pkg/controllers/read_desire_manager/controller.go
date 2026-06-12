@@ -30,11 +30,7 @@ import (
 )
 
 // DefaultCooldownPeriod is the minimum interval between two reconciles of a
-// ReadDesire whose Firestore UpdateTime has not changed. The manager's per-key
-// reconcile is bookkeeping (start/stop of the per-instance kube reflector),
-// so the periodic re-check is much less time-sensitive than apply or delete;
-// 10 minutes matches apply_desire's default and avoids needless churn on the
-// per-instance controllers.
+// ReadDesire whose Firestore UpdateTime has not changed.
 const DefaultCooldownPeriod = 10 * time.Minute
 
 type Config struct {
@@ -67,7 +63,7 @@ type PerInstanceFactory interface {
 // per-instance kubernetes reflectors.
 type ReadDesireInformerManagingController struct {
 	readDesireInformer cache.SharedIndexInformer
-	fetcher            *readDesireFetcher
+	specFetcher        *readDesireSpecFetcher
 	factory            PerInstanceFactory
 	writer             desirestatuswriter.StatusWriter[kubeapplier.ReadDesire, keys.ReadDesireKey]
 	queue              workqueue.TypedRateLimitingInterface[keys.ReadDesireKey]
@@ -90,24 +86,27 @@ type runningInstance struct {
 func NewReadDesireInformerManagingController(
 	readDesireInformer cache.SharedIndexInformer,
 	dyn dynamic.Interface,
-	crud database.ResourceCRUD[kubeapplier.ReadDesire],
+	specReader database.SpecReader[kubeapplier.ReadDesire],
+	statusCRUD database.ResourceCRUD[kubeapplier.ReadDesire],
 	cfg Config,
 ) (*ReadDesireInformerManagingController, error) {
 	cfg = cfg.withDefaults()
-	fetcher := &readDesireFetcher{crud: crud}
+	specFetcher := &readDesireSpecFetcher{reader: specReader}
+	statusFetcher := &readDesireStatusFetcher{crud: statusCRUD}
 	cooldownChecker := controllerutil.NewTimeBasedCooldownChecker(cfg.CooldownPeriod)
 	cooldownChecker.SetClock(cfg.Clock)
 	c := &ReadDesireInformerManagingController{
 		readDesireInformer: readDesireInformer,
-		fetcher:            fetcher,
-		factory:            &realPerInstanceFactory{dyn: dyn, crud: crud},
+		specFetcher:        specFetcher,
+		factory:            &realPerInstanceFactory{dyn: dyn, statusCRUD: statusCRUD},
 		queue: workqueue.NewTypedRateLimitingQueueWithConfig(
 			workqueue.DefaultTypedControllerRateLimiter[keys.ReadDesireKey](),
 			workqueue.TypedRateLimitingQueueConfig[keys.ReadDesireKey]{Name: "ReadDesireInformerManagingController"},
 		),
 		writer: desirestatuswriter.New[kubeapplier.ReadDesire, keys.ReadDesireKey, *kubeapplier.ReadDesire](
-			fetcher,
-			&readDesireReplacer{crud: crud},
+			statusFetcher,
+			&readDesireReplacer{crud: statusCRUD},
+			&readDesireCreator{crud: statusCRUD},
 		),
 		cfg:      cfg,
 		cooldown: cooldownChecker,
@@ -128,8 +127,8 @@ func NewReadDesireInformerManagingController(
 func (c *ReadDesireInformerManagingController) SetFactory(f PerInstanceFactory) { c.factory = f }
 
 type realPerInstanceFactory struct {
-	dyn  dynamic.Interface
-	crud database.ResourceCRUD[kubeapplier.ReadDesire]
+	dyn        dynamic.Interface
+	statusCRUD database.ResourceCRUD[kubeapplier.ReadDesire]
 }
 
 var _ PerInstanceFactory = &realPerInstanceFactory{}
@@ -137,7 +136,7 @@ var _ PerInstanceFactory = &realPerInstanceFactory{}
 func (f *realPerInstanceFactory) Build(
 	key keys.ReadDesireKey, target kubeapplier.ResourceReference,
 ) (PerInstanceController, error) {
-	return read_desire_kubernetes.NewReadDesireKubernetesController(key, target, f.dyn, f.crud)
+	return read_desire_kubernetes.NewReadDesireKubernetesController(key, target, f.dyn, f.statusCRUD)
 }
 
 func (c *ReadDesireInformerManagingController) Run(ctx context.Context, threadiness int) {
@@ -233,7 +232,7 @@ func (c *ReadDesireInformerManagingController) processNext(ctx context.Context) 
 // SyncOnce reconciles one ReadDesire by ensuring its per-instance controller
 // is running with the desired TargetItem.
 func (c *ReadDesireInformerManagingController) SyncOnce(ctx context.Context, key keys.ReadDesireKey) error {
-	desire, err := c.fetcher.Fetch(ctx, key)
+	desire, err := c.specFetcher.Fetch(ctx, key)
 	if err != nil && !database.IsNotFoundError(err) {
 		return err
 	}
@@ -257,6 +256,7 @@ func (c *ReadDesireInformerManagingController) SyncOnce(ctx context.Context, key
 	per, err := c.factory.Build(key, target)
 	if err != nil {
 		return c.writer.UpdateStatus(ctx, key, func(d *kubeapplier.ReadDesire) {
+			d.SetDocumentID(desire.GetDocumentID())
 			conditions.SetSuccessful(&d.Status.Conditions, err)
 		})
 	}
@@ -310,13 +310,23 @@ func (c *ReadDesireInformerManagingController) Running(key keys.ReadDesireKey) b
 	return ok
 }
 
-type readDesireFetcher struct {
+type readDesireSpecFetcher struct {
+	reader database.SpecReader[kubeapplier.ReadDesire]
+}
+
+var _ desirestatuswriter.Fetcher[kubeapplier.ReadDesire, keys.ReadDesireKey] = &readDesireSpecFetcher{}
+
+func (f *readDesireSpecFetcher) Fetch(ctx context.Context, key keys.ReadDesireKey) (*kubeapplier.ReadDesire, error) {
+	return f.reader.Get(ctx, key.Name)
+}
+
+type readDesireStatusFetcher struct {
 	crud database.ResourceCRUD[kubeapplier.ReadDesire]
 }
 
-var _ desirestatuswriter.Fetcher[kubeapplier.ReadDesire, keys.ReadDesireKey] = &readDesireFetcher{}
+var _ desirestatuswriter.Fetcher[kubeapplier.ReadDesire, keys.ReadDesireKey] = &readDesireStatusFetcher{}
 
-func (f *readDesireFetcher) Fetch(ctx context.Context, key keys.ReadDesireKey) (*kubeapplier.ReadDesire, error) {
+func (f *readDesireStatusFetcher) Fetch(ctx context.Context, key keys.ReadDesireKey) (*kubeapplier.ReadDesire, error) {
 	return f.crud.Get(ctx, key.Name)
 }
 
@@ -328,5 +338,16 @@ var _ desirestatuswriter.Replacer[kubeapplier.ReadDesire] = &readDesireReplacer{
 
 func (r *readDesireReplacer) Replace(ctx context.Context, desired *kubeapplier.ReadDesire) error {
 	_, err := r.crud.Replace(ctx, desired)
+	return err
+}
+
+type readDesireCreator struct {
+	crud database.ResourceCRUD[kubeapplier.ReadDesire]
+}
+
+var _ desirestatuswriter.Creator[kubeapplier.ReadDesire] = &readDesireCreator{}
+
+func (c *readDesireCreator) Create(ctx context.Context, obj *kubeapplier.ReadDesire) error {
+	_, err := c.crud.Create(ctx, obj)
 	return err
 }

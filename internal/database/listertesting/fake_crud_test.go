@@ -331,24 +331,24 @@ func TestFakeClient_ImplementsInterface(t *testing.T) {
 
 	// Verify each collection accessor returns a working CRUD.
 	d := newTestApplyDesire("cluster1--cm1")
-	if _, err := client.ApplyDesires().Create(ctx, d); err != nil {
-		t.Fatalf("ApplyDesires().Create: %v", err)
+	if _, err := client.ApplyDesireStatus().Create(ctx, d); err != nil {
+		t.Fatalf("ApplyDesireStatus().Create: %v", err)
 	}
 
 	dd := &kubeapplier.DeleteDesire{
 		FirestoreMetadata: kubeapplier.FirestoreMetadata{DocumentID: "cluster1--del1"},
 		Spec: kubeapplier.DeleteDesireSpec{ClusterID: "cluster1"},
 	}
-	if _, err := client.DeleteDesires().Create(ctx, dd); err != nil {
-		t.Fatalf("DeleteDesires().Create: %v", err)
+	if _, err := client.DeleteDesireStatus().Create(ctx, dd); err != nil {
+		t.Fatalf("DeleteDesireStatus().Create: %v", err)
 	}
 
 	rd := &kubeapplier.ReadDesire{
 		FirestoreMetadata: kubeapplier.FirestoreMetadata{DocumentID: "cluster1--read1"},
 		Spec: kubeapplier.ReadDesireSpec{ClusterID: "cluster1"},
 	}
-	if _, err := client.ReadDesires().Create(ctx, rd); err != nil {
-		t.Fatalf("ReadDesires().Create: %v", err)
+	if _, err := client.ReadDesireStatus().Create(ctx, rd); err != nil {
+		t.Fatalf("ReadDesireStatus().Create: %v", err)
 	}
 
 	if err := client.Close(); err != nil {
@@ -361,7 +361,7 @@ func TestFakeClient_CollectionsAreIsolated(t *testing.T) {
 	ctx := context.Background()
 
 	d := newTestApplyDesire("cluster1--cm1")
-	if _, err := client.ApplyDesires().Create(ctx, d); err != nil {
+	if _, err := client.ApplyDesireStatus().Create(ctx, d); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	// Same DocumentID in DeleteDesires should not conflict.
@@ -369,7 +369,7 @@ func TestFakeClient_CollectionsAreIsolated(t *testing.T) {
 		FirestoreMetadata: kubeapplier.FirestoreMetadata{DocumentID: "cluster1--cm1"},
 		Spec: kubeapplier.DeleteDesireSpec{ClusterID: "cluster1"},
 	}
-	if _, err := client.DeleteDesires().Create(ctx, dd); err != nil {
-		t.Fatalf("DeleteDesires().Create should not conflict with ApplyDesires: %v", err)
+	if _, err := client.DeleteDesireStatus().Create(ctx, dd); err != nil {
+		t.Fatalf("DeleteDesireStatus().Create should not conflict with ApplyDesireStatus: %v", err)
 	}
 }

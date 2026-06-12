@@ -283,7 +283,7 @@ func TestEvaluate_PreCheck_MissingFields(t *testing.T) {
 func TestSyncOnce_DesireNotFound(t *testing.T) {
 	ctx := context.Background()
 	crud := listertesting.NewFakeCRUD[kubeapplier.DeleteDesire, *kubeapplier.DeleteDesire]()
-	c := &DeleteDesireController{fetcher: &deleteDesireFetcher{crud: crud}}
+	c := &DeleteDesireController{specFetcher: &deleteDesireSpecFetcher{reader: crud}}
 
 	key := keys.DeleteDesireKey{ClusterID: "c1", Name: "cluster1--cm1"}
 	if err := c.SyncOnce(ctx, key); err != nil {
@@ -295,21 +295,22 @@ func TestSyncOnce_Success_TargetAbsent(t *testing.T) {
 	ctx := context.Background()
 	dyn := fakeDynamic(t, map[schema.GroupVersionResource]string{configMapGVR: "ConfigMapList"})
 
-	crud := listertesting.NewFakeCRUD[kubeapplier.DeleteDesire, *kubeapplier.DeleteDesire]()
+	specCRUD := listertesting.NewFakeCRUD[kubeapplier.DeleteDesire, *kubeapplier.DeleteDesire]()
+	statusCRUD := listertesting.NewFakeCRUD[kubeapplier.DeleteDesire, *kubeapplier.DeleteDesire]()
 	d := newDeleteDesire(t, "cm1", configMapTarget("cm1"))
-	created, err := crud.Create(ctx, d)
+	created, err := specCRUD.Create(ctx, d)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 
-	fetcher := &deleteDesireFetcher{crud: crud}
+	statusFetcher := &deleteDesireStatusFetcher{crud: statusCRUD}
 	writer := desirestatuswriter.New[kubeapplier.DeleteDesire, keys.DeleteDesireKey, *kubeapplier.DeleteDesire](
-		fetcher, &deleteDesireReplacer{crud: crud},
+		statusFetcher, &deleteDesireReplacer{crud: statusCRUD}, &deleteDesireCreator{crud: statusCRUD},
 	)
 	c := &DeleteDesireController{
-		fetcher: fetcher,
-		dyn:     dyn,
-		writer:  writer,
+		specFetcher: &deleteDesireSpecFetcher{reader: specCRUD},
+		dyn:         dyn,
+		writer:      writer,
 	}
 
 	key := mustKey(t, created)
@@ -317,7 +318,7 @@ func TestSyncOnce_Success_TargetAbsent(t *testing.T) {
 		t.Fatalf("SyncOnce: %v", err)
 	}
 
-	updated, err := crud.Get(ctx, created.DocumentID)
+	updated, err := statusCRUD.Get(ctx, created.DocumentID)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}

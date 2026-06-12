@@ -2,7 +2,7 @@
 // reflector. One instance is created for each ReadDesire by the manager
 // (see ../read_desire_manager). It list/watches a single named object via
 // the dynamic client and mirrors its observed state into the ReadDesire's
-// .status.kubeContent.
+// .status.kubeContent in the status database.
 package read_desire_kubernetes
 
 import (
@@ -57,7 +57,7 @@ type ReadDesireKubernetesController struct {
 
 	dyn      dynamic.Interface
 	informer cache.SharedIndexInformer
-	fetcher  *readDesireFetcher
+	fetcher  *readDesireStatusFetcher
 	writer   desirestatuswriter.StatusWriter[kubeapplier.ReadDesire, keys.ReadDesireKey]
 
 	queue workqueue.TypedRateLimitingInterface[keys.ReadDesireKey]
@@ -70,13 +70,13 @@ func NewReadDesireKubernetesController(
 	key keys.ReadDesireKey,
 	target kubeapplier.ResourceReference,
 	dyn dynamic.Interface,
-	crud database.ResourceCRUD[kubeapplier.ReadDesire],
+	statusCRUD database.ResourceCRUD[kubeapplier.ReadDesire],
 ) (*ReadDesireKubernetesController, error) {
 	if len(target.Resource) == 0 || len(target.Version) == 0 || len(target.Name) == 0 {
 		return nil, conditions.NewPreCheckError(errors.New("spec.targetItem requires version, resource, and name"))
 	}
 
-	fetcher := &readDesireFetcher{crud: crud}
+	fetcher := &readDesireStatusFetcher{crud: statusCRUD}
 	c := &ReadDesireKubernetesController{
 		key:    key,
 		target: target,
@@ -94,7 +94,8 @@ func NewReadDesireKubernetesController(
 		),
 		writer: desirestatuswriter.New[kubeapplier.ReadDesire, keys.ReadDesireKey, *kubeapplier.ReadDesire](
 			fetcher,
-			&readDesireReplacer{crud: crud},
+			&readDesireReplacer{crud: statusCRUD},
+			&readDesireCreator{crud: statusCRUD},
 		),
 	}
 
@@ -187,13 +188,9 @@ func (c *ReadDesireKubernetesController) SyncOnce(ctx context.Context) error {
 
 	desire, err := c.fetcher.Fetch(ctx, c.key)
 	if database.IsNotFoundError(err) {
-		return nil
-	}
-	if err != nil {
+		desire = nil
+	} else if err != nil {
 		return err
-	}
-	if desire == nil {
-		return nil
 	}
 
 	storeKey := c.target.Name
@@ -203,6 +200,7 @@ func (c *ReadDesireKubernetesController) SyncOnce(ctx context.Context) error {
 	rawObj, exists, err := c.informer.GetStore().GetByKey(storeKey)
 	if err != nil {
 		return c.writer.UpdateStatus(ctx, c.key, func(d *kubeapplier.ReadDesire) {
+			d.SetDocumentID(c.key.Name)
 			conditions.SetSuccessful(&d.Status.Conditions, fmt.Errorf("read cache: %w", err))
 		})
 	}
@@ -212,6 +210,7 @@ func (c *ReadDesireKubernetesController) SyncOnce(ctx context.Context) error {
 		obj, ok := rawObj.(*unstructured.Unstructured)
 		if !ok {
 			return c.writer.UpdateStatus(ctx, c.key, func(d *kubeapplier.ReadDesire) {
+				d.SetDocumentID(c.key.Name)
 				conditions.SetSuccessful(&d.Status.Conditions, conditions.NewPreCheckError(
 					fmt.Errorf("informer cached unexpected type %T", rawObj)))
 			})
@@ -219,22 +218,25 @@ func (c *ReadDesireKubernetesController) SyncOnce(ctx context.Context) error {
 		newRaw, err = json.Marshal(obj)
 		if err != nil {
 			return c.writer.UpdateStatus(ctx, c.key, func(d *kubeapplier.ReadDesire) {
+				d.SetDocumentID(c.key.Name)
 				conditions.SetSuccessful(&d.Status.Conditions, fmt.Errorf("marshal observed object: %w", err))
 			})
 		}
 	}
 
 	var existingRaw []byte
-	if desire.Status.KubeContent != nil {
+	if desire != nil && desire.Status.KubeContent != nil {
 		existingRaw = desire.Status.KubeContent.Raw
 	}
 	if bytes.Equal(newRaw, existingRaw) {
 		return c.writer.UpdateStatus(ctx, c.key, func(d *kubeapplier.ReadDesire) {
+			d.SetDocumentID(c.key.Name)
 			conditions.SetSuccessful(&d.Status.Conditions, nil)
 		})
 	}
 
 	return c.writer.UpdateStatus(ctx, c.key, func(d *kubeapplier.ReadDesire) {
+		d.SetDocumentID(c.key.Name)
 		if newRaw == nil {
 			d.Status.KubeContent = nil
 		} else {
@@ -263,13 +265,13 @@ func (c *ReadDesireKubernetesController) singleObjectListWatch() *cache.ListWatc
 	}
 }
 
-type readDesireFetcher struct {
+type readDesireStatusFetcher struct {
 	crud database.ResourceCRUD[kubeapplier.ReadDesire]
 }
 
-var _ desirestatuswriter.Fetcher[kubeapplier.ReadDesire, keys.ReadDesireKey] = &readDesireFetcher{}
+var _ desirestatuswriter.Fetcher[kubeapplier.ReadDesire, keys.ReadDesireKey] = &readDesireStatusFetcher{}
 
-func (f *readDesireFetcher) Fetch(ctx context.Context, key keys.ReadDesireKey) (*kubeapplier.ReadDesire, error) {
+func (f *readDesireStatusFetcher) Fetch(ctx context.Context, key keys.ReadDesireKey) (*kubeapplier.ReadDesire, error) {
 	return f.crud.Get(ctx, key.Name)
 }
 
@@ -281,5 +283,16 @@ var _ desirestatuswriter.Replacer[kubeapplier.ReadDesire] = &readDesireReplacer{
 
 func (r *readDesireReplacer) Replace(ctx context.Context, desired *kubeapplier.ReadDesire) error {
 	_, err := r.crud.Replace(ctx, desired)
+	return err
+}
+
+type readDesireCreator struct {
+	crud database.ResourceCRUD[kubeapplier.ReadDesire]
+}
+
+var _ desirestatuswriter.Creator[kubeapplier.ReadDesire] = &readDesireCreator{}
+
+func (c *readDesireCreator) Create(ctx context.Context, obj *kubeapplier.ReadDesire) error {
+	_, err := c.crud.Create(ctx, obj)
 	return err
 }

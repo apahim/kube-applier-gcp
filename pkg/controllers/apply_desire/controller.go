@@ -1,11 +1,11 @@
 // Package apply_desire implements the ApplyDesireController.
 //
-// On every sync the controller reads the named ApplyDesire from a live
-// Firestore client, decodes spec.kubeContent into an unstructured object, and
-// issues a server-side-apply with Force=true and FieldManager from this
-// package's FieldManager const via the dynamic client. The outcome is
-// recorded on .status.conditions["Successful"] / ["Degraded"] and persisted
-// via the StatusWriter.
+// On every sync the controller reads the named ApplyDesire spec from the specs
+// database, decodes spec.kubeContent into an unstructured object, and issues a
+// server-side-apply with Force=true and FieldManager from this package's
+// FieldManager const via the dynamic client. The outcome is recorded on
+// .status.conditions["Successful"] / ["Degraded"] and persisted to the status
+// database via the StatusWriter.
 package apply_desire
 
 import (
@@ -72,7 +72,7 @@ func (c Config) withDefaults() Config {
 type ApplyDesireController struct {
 	name                string
 	applyDesireInformer cache.SharedIndexInformer
-	fetcher             desirestatuswriter.Fetcher[kubeapplier.ApplyDesire, keys.ApplyDesireKey]
+	specFetcher         desirestatuswriter.Fetcher[kubeapplier.ApplyDesire, keys.ApplyDesireKey]
 	dyn                 dynamic.Interface
 	writer              desirestatuswriter.StatusWriter[kubeapplier.ApplyDesire, keys.ApplyDesireKey]
 	queue               workqueue.TypedRateLimitingInterface[keys.ApplyDesireKey]
@@ -86,21 +86,24 @@ type ApplyDesireController struct {
 func NewApplyDesireController(
 	applyDesireInformer cache.SharedIndexInformer,
 	dyn dynamic.Interface,
-	crud database.ResourceCRUD[kubeapplier.ApplyDesire],
+	specReader database.SpecReader[kubeapplier.ApplyDesire],
+	statusCRUD database.ResourceCRUD[kubeapplier.ApplyDesire],
 	cfg Config,
 ) (*ApplyDesireController, error) {
 	cfg = cfg.withDefaults()
-	fetcher := &applyDesireFetcher{crud: crud}
+	specFetcher := &applyDesireSpecFetcher{reader: specReader}
+	statusFetcher := &applyDesireStatusFetcher{crud: statusCRUD}
 	cooldownChecker := controllerutils.NewTimeBasedCooldownChecker(cfg.CooldownPeriod)
 	cooldownChecker.SetClock(cfg.Clock)
 	c := &ApplyDesireController{
 		name:                "ApplyDesireController",
 		applyDesireInformer: applyDesireInformer,
-		fetcher:             fetcher,
+		specFetcher:         specFetcher,
 		dyn:                 dyn,
 		writer: desirestatuswriter.New[kubeapplier.ApplyDesire, keys.ApplyDesireKey, *kubeapplier.ApplyDesire](
-			fetcher,
-			&applyDesireReplacer{crud: crud},
+			statusFetcher,
+			&applyDesireReplacer{crud: statusCRUD},
+			&applyDesireCreator{crud: statusCRUD},
 		),
 		queue: workqueue.NewTypedRateLimitingQueueWithConfig(
 			workqueue.DefaultTypedControllerRateLimiter[keys.ApplyDesireKey](),
@@ -201,7 +204,7 @@ func (c *ApplyDesireController) processNext(ctx context.Context) bool {
 
 // SyncOnce performs a single reconcile pass for the named ApplyDesire.
 func (c *ApplyDesireController) SyncOnce(ctx context.Context, key keys.ApplyDesireKey) error {
-	desire, err := c.fetcher.Fetch(ctx, key)
+	desire, err := c.specFetcher.Fetch(ctx, key)
 	if database.IsNotFoundError(err) {
 		return nil
 	}
@@ -215,6 +218,7 @@ func (c *ApplyDesireController) SyncOnce(ctx context.Context, key keys.ApplyDesi
 	syncErr := c.applyDesired(ctx, desire)
 
 	return c.writer.UpdateStatus(ctx, key, func(d *kubeapplier.ApplyDesire) {
+		d.SetDocumentID(desire.GetDocumentID())
 		conditions.SetSuccessful(&d.Status.Conditions, syncErr)
 		conditions.SetDegraded(&d.Status.Conditions, classifyAsDegraded(syncErr))
 	})
@@ -273,13 +277,25 @@ func isClientError(err error) bool {
 	return false
 }
 
-type applyDesireFetcher struct {
+// applyDesireSpecFetcher reads from the specs database.
+type applyDesireSpecFetcher struct {
+	reader database.SpecReader[kubeapplier.ApplyDesire]
+}
+
+var _ desirestatuswriter.Fetcher[kubeapplier.ApplyDesire, keys.ApplyDesireKey] = &applyDesireSpecFetcher{}
+
+func (f *applyDesireSpecFetcher) Fetch(ctx context.Context, key keys.ApplyDesireKey) (*kubeapplier.ApplyDesire, error) {
+	return f.reader.Get(ctx, key.Name)
+}
+
+// applyDesireStatusFetcher reads from the status database.
+type applyDesireStatusFetcher struct {
 	crud database.ResourceCRUD[kubeapplier.ApplyDesire]
 }
 
-var _ desirestatuswriter.Fetcher[kubeapplier.ApplyDesire, keys.ApplyDesireKey] = &applyDesireFetcher{}
+var _ desirestatuswriter.Fetcher[kubeapplier.ApplyDesire, keys.ApplyDesireKey] = &applyDesireStatusFetcher{}
 
-func (f *applyDesireFetcher) Fetch(ctx context.Context, key keys.ApplyDesireKey) (*kubeapplier.ApplyDesire, error) {
+func (f *applyDesireStatusFetcher) Fetch(ctx context.Context, key keys.ApplyDesireKey) (*kubeapplier.ApplyDesire, error) {
 	return f.crud.Get(ctx, key.Name)
 }
 
@@ -291,5 +307,16 @@ var _ desirestatuswriter.Replacer[kubeapplier.ApplyDesire] = &applyDesireReplace
 
 func (r *applyDesireReplacer) Replace(ctx context.Context, desired *kubeapplier.ApplyDesire) error {
 	_, err := r.crud.Replace(ctx, desired)
+	return err
+}
+
+type applyDesireCreator struct {
+	crud database.ResourceCRUD[kubeapplier.ApplyDesire]
+}
+
+var _ desirestatuswriter.Creator[kubeapplier.ApplyDesire] = &applyDesireCreator{}
+
+func (c *applyDesireCreator) Create(ctx context.Context, obj *kubeapplier.ApplyDesire) error {
+	_, err := c.crud.Create(ctx, obj)
 	return err
 }

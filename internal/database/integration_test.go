@@ -39,8 +39,8 @@ func TestIntegration_ApplyDesireCRUDRoundTrip(t *testing.T) {
 	requireEmulator(t)
 	ctx := context.Background()
 	client := newTestClient(t)
-	dbClient := NewFirestoreKubeApplierDBClient(client)
-	crud := dbClient.ApplyDesires()
+	dbClient := NewFirestoreKubeApplierDBClient(client, client)
+	crud := dbClient.ApplyDesireStatus()
 
 	d := &kubeapplier.ApplyDesire{
 		FirestoreMetadata: kubeapplier.FirestoreMetadata{DocumentID: "cluster1--cm1"},
@@ -134,8 +134,8 @@ func TestIntegration_DeleteDesireCRUDRoundTrip(t *testing.T) {
 	requireEmulator(t)
 	ctx := context.Background()
 	client := newTestClient(t)
-	dbClient := NewFirestoreKubeApplierDBClient(client)
-	crud := dbClient.DeleteDesires()
+	dbClient := NewFirestoreKubeApplierDBClient(client, client)
+	crud := dbClient.DeleteDesireStatus()
 
 	d := &kubeapplier.DeleteDesire{
 		FirestoreMetadata: kubeapplier.FirestoreMetadata{DocumentID: "cluster1--del1"},
@@ -174,8 +174,8 @@ func TestIntegration_ReadDesireCRUDRoundTrip(t *testing.T) {
 	requireEmulator(t)
 	ctx := context.Background()
 	client := newTestClient(t)
-	dbClient := NewFirestoreKubeApplierDBClient(client)
-	crud := dbClient.ReadDesires()
+	dbClient := NewFirestoreKubeApplierDBClient(client, client)
+	crud := dbClient.ReadDesireStatus()
 
 	d := &kubeapplier.ReadDesire{
 		FirestoreMetadata: kubeapplier.FirestoreMetadata{DocumentID: "cluster1--read1"},
@@ -212,8 +212,8 @@ func TestIntegration_OptimisticConcurrencyConflict(t *testing.T) {
 	requireEmulator(t)
 	ctx := context.Background()
 	client := newTestClient(t)
-	dbClient := NewFirestoreKubeApplierDBClient(client)
-	crud := dbClient.ApplyDesires()
+	dbClient := NewFirestoreKubeApplierDBClient(client, client)
+	crud := dbClient.ApplyDesireStatus()
 
 	d := &kubeapplier.ApplyDesire{
 		FirestoreMetadata: kubeapplier.FirestoreMetadata{DocumentID: "cluster1--conflict"},
@@ -263,8 +263,8 @@ func TestIntegration_RawExtensionRoundTrip(t *testing.T) {
 	requireEmulator(t)
 	ctx := context.Background()
 	client := newTestClient(t)
-	dbClient := NewFirestoreKubeApplierDBClient(client)
-	crud := dbClient.ApplyDesires()
+	dbClient := NewFirestoreKubeApplierDBClient(client, client)
+	crud := dbClient.ApplyDesireStatus()
 
 	rawJSON := []byte(`{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"test"},"data":{"key":"value","nested":{"a":1}}}`)
 
@@ -314,8 +314,8 @@ func TestIntegration_MetaV1TimeRoundTrip(t *testing.T) {
 	requireEmulator(t)
 	ctx := context.Background()
 	client := newTestClient(t)
-	dbClient := NewFirestoreKubeApplierDBClient(client)
-	crud := dbClient.ApplyDesires()
+	dbClient := NewFirestoreKubeApplierDBClient(client, client)
+	crud := dbClient.ApplyDesireStatus()
 
 	ts := metav1.NewTime(time.Date(2026, 6, 15, 14, 30, 45, 0, time.UTC))
 
@@ -364,8 +364,8 @@ func TestIntegration_ListReturnsAll(t *testing.T) {
 	requireEmulator(t)
 	ctx := context.Background()
 	client := newTestClient(t)
-	dbClient := NewFirestoreKubeApplierDBClient(client)
-	crud := dbClient.ApplyDesires()
+	dbClient := NewFirestoreKubeApplierDBClient(client, client)
+	crud := dbClient.ApplyDesireStatus()
 
 	for i := 0; i < 3; i++ {
 		d := &kubeapplier.ApplyDesire{
@@ -398,7 +398,7 @@ func TestIntegration_PerCollectionIsolation(t *testing.T) {
 	requireEmulator(t)
 	ctx := context.Background()
 	client := newTestClient(t)
-	dbClient := NewFirestoreKubeApplierDBClient(client)
+	dbClient := NewFirestoreKubeApplierDBClient(client, client)
 
 	ad := &kubeapplier.ApplyDesire{
 		FirestoreMetadata: kubeapplier.FirestoreMetadata{DocumentID: "cluster1--shared-id"},
@@ -412,7 +412,7 @@ func TestIntegration_PerCollectionIsolation(t *testing.T) {
 			},
 		},
 	}
-	if _, err := dbClient.ApplyDesires().Create(ctx, ad); err != nil {
+	if _, err := dbClient.ApplyDesireStatus().Create(ctx, ad); err != nil {
 		t.Fatalf("Create ApplyDesire: %v", err)
 	}
 
@@ -429,16 +429,16 @@ func TestIntegration_PerCollectionIsolation(t *testing.T) {
 			},
 		},
 	}
-	if _, err := dbClient.DeleteDesires().Create(ctx, dd); err != nil {
+	if _, err := dbClient.DeleteDesireStatus().Create(ctx, dd); err != nil {
 		t.Fatalf("Create DeleteDesire should not conflict: %v", err)
 	}
 
 	// ApplyDesires list should have 1, DeleteDesires list should have 1.
-	applyList, err := dbClient.ApplyDesires().List(ctx)
+	applyList, err := dbClient.ApplyDesireStatus().List(ctx)
 	if err != nil {
 		t.Fatalf("ApplyDesires.List: %v", err)
 	}
-	deleteList, err := dbClient.DeleteDesires().List(ctx)
+	deleteList, err := dbClient.DeleteDesireStatus().List(ctx)
 	if err != nil {
 		t.Fatalf("DeleteDesires.List: %v", err)
 	}
@@ -454,9 +454,9 @@ func TestIntegration_GetNotFound(t *testing.T) {
 	requireEmulator(t)
 	ctx := context.Background()
 	client := newTestClient(t)
-	dbClient := NewFirestoreKubeApplierDBClient(client)
+	dbClient := NewFirestoreKubeApplierDBClient(client, client)
 
-	_, err := dbClient.ApplyDesires().Get(ctx, "nonexistent")
+	_, err := dbClient.ApplyDesireStatus().Get(ctx, "nonexistent")
 	if !IsNotFoundError(err) {
 		t.Errorf("expected NotFoundError, got %v", err)
 	}
@@ -466,8 +466,8 @@ func TestIntegration_CreateDuplicate(t *testing.T) {
 	requireEmulator(t)
 	ctx := context.Background()
 	client := newTestClient(t)
-	dbClient := NewFirestoreKubeApplierDBClient(client)
-	crud := dbClient.ApplyDesires()
+	dbClient := NewFirestoreKubeApplierDBClient(client, client)
+	crud := dbClient.ApplyDesireStatus()
 
 	d := &kubeapplier.ApplyDesire{
 		FirestoreMetadata: kubeapplier.FirestoreMetadata{DocumentID: "cluster1--dup"},
@@ -494,7 +494,7 @@ func TestIntegration_CreateDuplicate(t *testing.T) {
 func TestIntegration_ClientClose(t *testing.T) {
 	requireEmulator(t)
 	client := newTestClient(t)
-	dbClient := NewFirestoreKubeApplierDBClient(client)
+	dbClient := NewFirestoreKubeApplierDBClient(client, client)
 	if err := dbClient.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}

@@ -31,8 +31,9 @@ This is for simplicity in reasoning about the status.
 Every `*Desire` API has a `.spec.managementCluster` field.
 This is the name of the GKE management cluster that the `kube-applier` is running in.
 It matches the value the kube-applier binary was started with via `--management-cluster`.
-Each management cluster has its own Firestore named database (`mc-{clusterName}`),
-so the management cluster name determines which database the binary connects to.
+Each management cluster has its own pair of Firestore named databases
+(`mc-{clusterName}-specs` and `mc-{clusterName}-status`),
+so the management cluster name determines which databases the binary connects to.
 
 ### Conditions
 Each `*Desire` API has a list of conditions.
@@ -54,46 +55,63 @@ When the kube-apiserver call cannot be executed,
 3. `.status.conditions["Successful"].message` is whatever prevented us from calling the kube-apiserver.
 
 ## Database structure
-Every management cluster has its own Firestore **named database**: `mc-{clusterName}`.
-Each kube-applier pod authenticates via GKE Workload Identity Federation
-(pod KSA → IAM GSA) with an IAM condition restricting access to exactly its own database.
+Every management cluster has two Firestore **named databases** with IAM-enforced
+directional isolation:
 
-Each database contains three collections:
+| Database | Agent access | Backend access | Contents |
+|----------|-------------|----------------|----------|
+| `mc-{clusterName}-specs` | read-only | read-write | Spec documents written by the backend |
+| `mc-{clusterName}-status` | read-write | read-only | Status documents written by the agent |
+
+Each database contains three collections with matching document IDs:
 ```
-database: mc-{managementClusterName}
-  applydesires/{clusterID}--{desireName}
-  deletedesires/{clusterID}--{desireName}
-  readdesires/{clusterID}--{desireName}
+database: mc-{managementClusterName}-specs   (agent: read-only)
+  applydesires/{uuid}
+  deletedesires/{uuid}
+  readdesires/{uuid}
+
+database: mc-{managementClusterName}-status  (agent: read-write)
+  applydesires/{uuid}
+  deletedesires/{uuid}
+  readdesires/{uuid}
 ```
 
-Document IDs are composite: `{clusterID}--{desireName}`. The cluster ID prefix
-provides structural uniqueness across hosted clusters within the same MC database
-and makes orphan cleanup by cluster trivial (prefix scan on the ID). Both
-HostedCluster-scoped and NodePool-scoped desires use the same `{clusterID}--{desireName}`
-format — nodepool identity lives in the spec, not the document ID.
+Document IDs are deterministic UUID v5 values generated from
+`uuid.NewSHA1(namespaceUUID, "{taskKey}/{group}/{version}/{resource}/{namespace}/{name}")`.
+The namespace UUID is a fixed constant shared between the agent and backend
+(defined in `internal/desireid`). The same document ID in both databases links
+a spec to its status.
 
-The per-database layout means an escape from one management cluster's pod cannot read
-or write another management cluster's Desires — there is no shared database to leak through.
+The two-database layout means the agent cannot modify specs and the backend
+cannot modify status — IAM enforces this at the database level (Firestore IAM
+granularity stops at the database, not the collection). An escape from one
+management cluster's pod cannot read or write another cluster's data.
 
 Firestore snapshot listeners provide real-time change notification: the kube-applier
-opens a persistent gRPC stream per collection and receives document changes as they happen,
-rather than polling. The informer's resync period still triggers periodic handler resyncs
-for cooldown-gated re-reconciliation.
+opens a persistent gRPC stream per collection in the **specs database** and receives
+document changes as they happen, rather than polling. The informer's resync period
+still triggers periodic handler resyncs for cooldown-gated re-reconciliation.
 
 ### Authentication and isolation
 - GKE Workload Identity Federation: pod KSA → IAM GSA (no service account keys)
-- Per-database IAM condition: `resource.name == "projects/{project}/databases/mc-{cluster}"`
-- Role: `roles/datastore.user` (read + write)
+- Per-database IAM conditions:
+  - `roles/datastore.viewer` on specs-db: `resource.name == "projects/{project}/databases/mc-{cluster}-specs"`
+  - `roles/datastore.user` on status-db: `resource.name == "projects/{project}/databases/mc-{cluster}-status"`
 
 ### Golang type details for Database
 The golang types live in `internal/database`.
 
-`KubeApplierDBClient` is the per-database handle. It carries an open Firestore client
-and exposes:
-- `ApplyDesires() ResourceCRUD[ApplyDesire]`
-- `DeleteDesires() ResourceCRUD[DeleteDesire]`
-- `ReadDesires() ResourceCRUD[ReadDesire]`
+`KubeApplierDBClient` is the two-database handle. It carries two open Firestore clients
+(specs and status) and exposes read-only accessors for the specs database and full CRUD
+accessors for the status database:
+- `ApplyDesireSpecs() SpecReader[ApplyDesire]` — read-only, specs-db
+- `DeleteDesireSpecs() SpecReader[DeleteDesire]` — read-only, specs-db
+- `ReadDesireSpecs() SpecReader[ReadDesire]` — read-only, specs-db
+- `ApplyDesireStatus() ResourceCRUD[ApplyDesire]` — read-write, status-db
+- `DeleteDesireStatus() ResourceCRUD[DeleteDesire]` — read-write, status-db
+- `ReadDesireStatus() ResourceCRUD[ReadDesire]` — read-write, status-db
 
+`SpecReader[T]` provides read-only operations: `Get` and `List`.
 `ResourceCRUD[T]` provides flat CRUD operations: `Get`, `List`, `Create`, `Replace`, `Delete`.
 `Replace` uses `firestore.Update` with `LastUpdateTime` precondition for optimistic concurrency —
 if the document has changed since the last read, the write fails with `codes.FailedPrecondition`
@@ -103,7 +121,7 @@ the `spec` and `status` fields entirely, which is equivalent to a full document 
 since those are the only data fields.
 
 Each desire type carries a `FirestoreMetadata` struct with:
-- `DocumentID` — the Firestore document path
+- `DocumentID` — the Firestore document path (UUID v5)
 - `UpdateTime` — server-managed timestamp, used as the optimistic concurrency token
 - `CreateTime` — server-managed creation timestamp
 
@@ -119,13 +137,20 @@ to `map[string]any` and stored as separate document fields (`spec_kubeContent`,
 This means JSON key ordering is not preserved through a round-trip (Firestore maps
 are unordered), but the data is semantically identical.
 
-The kube-applier binary opens exactly one database — its own — via
-`NewKubeApplierDBClient(ctx, project, "mc-"+mcName)`.
+The kube-applier binary opens two databases — specs and status — via
+`NewFirestoreKubeApplierDBClient(specsClient, statusClient)`.
 The backend service constructs clients for each MC database deterministically
 from the MC name; no registry or lister walk is needed.
 
+Controllers receive a `SpecReader` for fetching the current spec from specs-db
+and a `ResourceCRUD` for writing status to status-db. The `desirestatuswriter`
+package uses a create-or-replace pattern: on first reconcile the status document
+does not exist yet (since it lives in a separate database from the spec), so the
+writer creates it; on subsequent reconciles it replaces the existing document.
+
 Informers and listers are constructed separately at app wiring time via
-`informers.NewKubeApplierInformers(firestoreClient)`. The `KubeApplierInformers`
+`informers.NewKubeApplierInformers(specsClient)`. They watch the **specs database
+only** — spec document changes trigger agent reconciliation. The `KubeApplierInformers`
 interface returns both a `SharedIndexInformer` (for event handlers) and a typed lister
 (for `List()` and `Get(documentID)` lookups) per desire type. Internally, each informer
 uses a real Firestore snapshot listener (`collection.Snapshots()`) to stream document

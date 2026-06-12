@@ -27,7 +27,8 @@ type KubeApplierRootCmdFlags struct {
 	KubeNamespace              string
 	ManagementCluster          string
 	FirestoreProject           string
-	FirestoreDatabase          string
+	FirestoreSpecsDatabase     string
+	FirestoreStatusDatabase    string
 	MetricsServerListenAddress string
 	HealthzServerListenAddress string
 	LeaderElectionID           string
@@ -44,8 +45,10 @@ func (f *KubeApplierRootCmdFlags) AddFlags(cmd *cobra.Command) {
 		"Name of the GKE management cluster this pod runs in.")
 	cmd.Flags().StringVar(&f.FirestoreProject, "firestore-project", f.FirestoreProject,
 		"GCP project ID that hosts the Firestore databases.")
-	cmd.Flags().StringVar(&f.FirestoreDatabase, "firestore-database", f.FirestoreDatabase,
-		"Firestore named database ID. Defaults to mc-{management-cluster} if empty.")
+	cmd.Flags().StringVar(&f.FirestoreSpecsDatabase, "firestore-specs-database", f.FirestoreSpecsDatabase,
+		"Firestore named database ID for spec documents (read-only by agent).")
+	cmd.Flags().StringVar(&f.FirestoreStatusDatabase, "firestore-status-database", f.FirestoreStatusDatabase,
+		"Firestore named database ID for status documents (read-write by agent).")
 	cmd.Flags().StringVar(&f.MetricsServerListenAddress, "metrics-listen-address", f.MetricsServerListenAddress,
 		"Address on which to expose Prometheus metrics.")
 	cmd.Flags().StringVar(&f.HealthzServerListenAddress, "healthz-listen-address", f.HealthzServerListenAddress,
@@ -100,18 +103,27 @@ func (f *KubeApplierRootCmdFlags) ToKubeApplierOptions(ctx context.Context) (*ap
 		return nil, fmt.Errorf("failed to create leader election lock: %w", err)
 	}
 
-	databaseID := f.FirestoreDatabase
-	if databaseID == "" {
-		databaseID = "mc-" + f.ManagementCluster
+	specsDatabaseID := f.FirestoreSpecsDatabase
+	if specsDatabaseID == "" {
+		specsDatabaseID = "mc-" + f.ManagementCluster + "-specs"
+	}
+	statusDatabaseID := f.FirestoreStatusDatabase
+	if statusDatabaseID == "" {
+		statusDatabaseID = "mc-" + f.ManagementCluster + "-status"
 	}
 
-	firestoreClient, err := app.NewFirestoreClient(ctx, f.FirestoreProject, databaseID)
+	specsClient, err := app.NewFirestoreClient(ctx, f.FirestoreProject, specsDatabaseID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create Firestore client: %w", err)
+		return nil, fmt.Errorf("failed to create Firestore specs client: %w", err)
+	}
+	statusClient, err := app.NewFirestoreClient(ctx, f.FirestoreProject, statusDatabaseID)
+	if err != nil {
+		specsClient.Close()
+		return nil, fmt.Errorf("failed to create Firestore status client: %w", err)
 	}
 
-	dbClient := database.NewFirestoreKubeApplierDBClient(firestoreClient)
-	firestoreInformers := informers.NewKubeApplierInformers(firestoreClient)
+	dbClient := database.NewFirestoreKubeApplierDBClient(specsClient, statusClient)
+	firestoreInformers := informers.NewKubeApplierInformers(specsClient)
 
 	dyn, err := app.NewDynamicClient(kubeconfig)
 	if err != nil {

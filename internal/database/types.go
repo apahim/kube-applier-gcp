@@ -27,9 +27,17 @@ type SpecStatusAccessor interface {
 	GetStatus() any
 }
 
+// SpecReader provides read-only access to spec documents in the specs
+// database. The agent uses this to read desire specifications written by the
+// backend.
+type SpecReader[T any] interface {
+	Get(ctx context.Context, documentID string) (*T, error)
+	List(ctx context.Context) ([]*T, error)
+}
+
 // ResourceCRUD is the generic CRUD interface for a single Firestore collection.
-// Each desire type (ApplyDesire, DeleteDesire, ReadDesire) gets its own instance
-// scoped to its collection name.
+// Used for status documents in the status database where the agent needs full
+// read-write access.
 //
 // Get returns NewNotFoundError() when the document doesn't exist.
 // Create returns codes.AlreadyExists when the document already exists.
@@ -43,12 +51,18 @@ type ResourceCRUD[T any] interface {
 	Delete(ctx context.Context, documentID string) error
 }
 
-// KubeApplierDBClient is the per-database handle for a single management
-// cluster's Firestore named database. It provides typed CRUD access to each
-// desire collection.
+// KubeApplierDBClient is the per-management-cluster handle that wraps two
+// Firestore named databases: specs (read-only for the agent) and status
+// (read-write for the agent). IAM enforces directional isolation: the agent
+// has datastore.viewer on specs and datastore.user on status.
 type KubeApplierDBClient interface {
-	ApplyDesires() ResourceCRUD[kubeapplier.ApplyDesire]
-	DeleteDesires() ResourceCRUD[kubeapplier.DeleteDesire]
-	ReadDesires() ResourceCRUD[kubeapplier.ReadDesire]
+	ApplyDesireSpecs() SpecReader[kubeapplier.ApplyDesire]
+	DeleteDesireSpecs() SpecReader[kubeapplier.DeleteDesire]
+	ReadDesireSpecs() SpecReader[kubeapplier.ReadDesire]
+
+	ApplyDesireStatus() ResourceCRUD[kubeapplier.ApplyDesire]
+	DeleteDesireStatus() ResourceCRUD[kubeapplier.DeleteDesire]
+	ReadDesireStatus() ResourceCRUD[kubeapplier.ReadDesire]
+
 	Close() error
 }

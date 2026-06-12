@@ -61,7 +61,7 @@ func (c Config) withDefaults() Config {
 type DeleteDesireController struct {
 	name                 string
 	deleteDesireInformer cache.SharedIndexInformer
-	fetcher              *deleteDesireFetcher
+	specFetcher          *deleteDesireSpecFetcher
 	dyn                  dynamic.Interface
 	writer               desirestatuswriter.StatusWriter[kubeapplier.DeleteDesire, keys.DeleteDesireKey]
 	queue                workqueue.TypedRateLimitingInterface[keys.DeleteDesireKey]
@@ -75,21 +75,24 @@ type DeleteDesireController struct {
 func NewDeleteDesireController(
 	deleteDesireInformer cache.SharedIndexInformer,
 	dyn dynamic.Interface,
-	crud database.ResourceCRUD[kubeapplier.DeleteDesire],
+	specReader database.SpecReader[kubeapplier.DeleteDesire],
+	statusCRUD database.ResourceCRUD[kubeapplier.DeleteDesire],
 	cfg Config,
 ) (*DeleteDesireController, error) {
 	cfg = cfg.withDefaults()
-	fetcher := &deleteDesireFetcher{crud: crud}
+	specFetcher := &deleteDesireSpecFetcher{reader: specReader}
+	statusFetcher := &deleteDesireStatusFetcher{crud: statusCRUD}
 	cooldownChecker := controllerutil.NewTimeBasedCooldownChecker(cfg.CooldownPeriod)
 	cooldownChecker.SetClock(cfg.Clock)
 	c := &DeleteDesireController{
 		name:                 "DeleteDesireController",
 		deleteDesireInformer: deleteDesireInformer,
-		fetcher:              fetcher,
+		specFetcher:          specFetcher,
 		dyn:                  dyn,
 		writer: desirestatuswriter.New[kubeapplier.DeleteDesire, keys.DeleteDesireKey, *kubeapplier.DeleteDesire](
-			fetcher,
-			&deleteDesireReplacer{crud: crud},
+			statusFetcher,
+			&deleteDesireReplacer{crud: statusCRUD},
+			&deleteDesireCreator{crud: statusCRUD},
 		),
 		queue: workqueue.NewTypedRateLimitingQueueWithConfig(
 			workqueue.DefaultTypedControllerRateLimiter[keys.DeleteDesireKey](),
@@ -184,7 +187,7 @@ func (c *DeleteDesireController) processNext(ctx context.Context) bool {
 
 // SyncOnce performs a single reconcile pass for the named DeleteDesire.
 func (c *DeleteDesireController) SyncOnce(ctx context.Context, key keys.DeleteDesireKey) error {
-	desire, err := c.fetcher.Fetch(ctx, key)
+	desire, err := c.specFetcher.Fetch(ctx, key)
 	if database.IsNotFoundError(err) {
 		return nil
 	}
@@ -196,20 +199,13 @@ func (c *DeleteDesireController) SyncOnce(ctx context.Context, key keys.DeleteDe
 	}
 
 	mutate, _ := c.evaluate(ctx, desire)
-	return c.writer.UpdateStatus(ctx, key, mutate)
+	return c.writer.UpdateStatus(ctx, key, func(d *kubeapplier.DeleteDesire) {
+		d.SetDocumentID(desire.GetDocumentID())
+		mutate(d)
+	})
 }
 
 // evaluate runs the state machine for one DeleteDesire.
-//
-// State machine:
-//
-//	get target
-//	  not found             -> SetSuccessful(true)
-//	  has deletion timestamp -> WaitingForDeletion
-//	  no deletion timestamp -> issue Delete; on error -> KubeAPIError
-//	                           re-issue get
-//	                             still not found       -> SetSuccessful(true)
-//	                             has deletion timestamp -> WaitingForDeletion
 func (c *DeleteDesireController) evaluate(ctx context.Context, d *kubeapplier.DeleteDesire) (desirestatuswriter.MutateFunc[kubeapplier.DeleteDesire], error) {
 	target := d.Spec.TargetItem
 	if len(target.Resource) == 0 || len(target.Version) == 0 || len(target.Name) == 0 {
@@ -308,13 +304,23 @@ func classifyAsDegraded(err error) error {
 	return err
 }
 
-type deleteDesireFetcher struct {
+type deleteDesireSpecFetcher struct {
+	reader database.SpecReader[kubeapplier.DeleteDesire]
+}
+
+var _ desirestatuswriter.Fetcher[kubeapplier.DeleteDesire, keys.DeleteDesireKey] = &deleteDesireSpecFetcher{}
+
+func (f *deleteDesireSpecFetcher) Fetch(ctx context.Context, key keys.DeleteDesireKey) (*kubeapplier.DeleteDesire, error) {
+	return f.reader.Get(ctx, key.Name)
+}
+
+type deleteDesireStatusFetcher struct {
 	crud database.ResourceCRUD[kubeapplier.DeleteDesire]
 }
 
-var _ desirestatuswriter.Fetcher[kubeapplier.DeleteDesire, keys.DeleteDesireKey] = &deleteDesireFetcher{}
+var _ desirestatuswriter.Fetcher[kubeapplier.DeleteDesire, keys.DeleteDesireKey] = &deleteDesireStatusFetcher{}
 
-func (f *deleteDesireFetcher) Fetch(ctx context.Context, key keys.DeleteDesireKey) (*kubeapplier.DeleteDesire, error) {
+func (f *deleteDesireStatusFetcher) Fetch(ctx context.Context, key keys.DeleteDesireKey) (*kubeapplier.DeleteDesire, error) {
 	return f.crud.Get(ctx, key.Name)
 }
 
@@ -326,5 +332,16 @@ var _ desirestatuswriter.Replacer[kubeapplier.DeleteDesire] = &deleteDesireRepla
 
 func (r *deleteDesireReplacer) Replace(ctx context.Context, desired *kubeapplier.DeleteDesire) error {
 	_, err := r.crud.Replace(ctx, desired)
+	return err
+}
+
+type deleteDesireCreator struct {
+	crud database.ResourceCRUD[kubeapplier.DeleteDesire]
+}
+
+var _ desirestatuswriter.Creator[kubeapplier.DeleteDesire] = &deleteDesireCreator{}
+
+func (c *deleteDesireCreator) Create(ctx context.Context, obj *kubeapplier.DeleteDesire) error {
+	_, err := c.crud.Create(ctx, obj)
 	return err
 }

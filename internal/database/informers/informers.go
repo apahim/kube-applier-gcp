@@ -34,13 +34,16 @@ type kubeApplierInformers struct {
 	readDesireLister     listers.ReadDesireLister
 }
 
-func NewKubeApplierInformers(client *firestore.Client) KubeApplierInformers {
-	return NewKubeApplierInformersWithResyncPeriod(client, defaultResyncPeriod)
+// NewKubeApplierInformers creates informers that watch the specs database for
+// desire document changes. Only the specs client is needed: the agent watches
+// for spec writes from the backend and reconciles against them.
+func NewKubeApplierInformers(specsClient *firestore.Client) KubeApplierInformers {
+	return NewKubeApplierInformersWithResyncPeriod(specsClient, defaultResyncPeriod)
 }
 
-func NewKubeApplierInformersWithResyncPeriod(client *firestore.Client, resyncPeriod time.Duration) KubeApplierInformers {
+func NewKubeApplierInformersWithResyncPeriod(specsClient *firestore.Client, resyncPeriod time.Duration) KubeApplierInformers {
 	applyInf := newDesireInformer(
-		client.Collection(database.CollectionApplyDesires),
+		specsClient.Collection(database.CollectionApplyDesires),
 		&kubeapplier.ApplyDesire{},
 		func(snap *firestore.DocumentSnapshot) (runtime.Object, error) {
 			return database.SnapshotToApplyDesire(snap)
@@ -60,7 +63,7 @@ func NewKubeApplierInformersWithResyncPeriod(client *firestore.Client, resyncPer
 		resyncPeriod,
 	)
 	deleteInf := newDesireInformer(
-		client.Collection(database.CollectionDeleteDesires),
+		specsClient.Collection(database.CollectionDeleteDesires),
 		&kubeapplier.DeleteDesire{},
 		func(snap *firestore.DocumentSnapshot) (runtime.Object, error) {
 			return database.SnapshotToDeleteDesire(snap)
@@ -80,7 +83,7 @@ func NewKubeApplierInformersWithResyncPeriod(client *firestore.Client, resyncPer
 		resyncPeriod,
 	)
 	readInf := newDesireInformer(
-		client.Collection(database.CollectionReadDesires),
+		specsClient.Collection(database.CollectionReadDesires),
 		&kubeapplier.ReadDesire{},
 		func(snap *firestore.DocumentSnapshot) (runtime.Object, error) {
 			return database.SnapshotToReadDesire(snap)

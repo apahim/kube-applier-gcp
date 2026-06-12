@@ -194,7 +194,7 @@ func TestIntegration_InformerSyncsExistingDocuments(t *testing.T) {
 	defer cancel()
 
 	client := newTestClient(t)
-	dbClient := database.NewFirestoreKubeApplierDBClient(client)
+	dbClient := database.NewFirestoreKubeApplierDBClient(client, client)
 
 	for i := 0; i < 3; i++ {
 		d := &kubeapplier.ApplyDesire{
@@ -209,7 +209,7 @@ func TestIntegration_InformerSyncsExistingDocuments(t *testing.T) {
 				},
 			},
 		}
-		if _, err := dbClient.ApplyDesires().Create(ctx, d); err != nil {
+		if _, err := dbClient.ApplyDesireStatus().Create(ctx, d); err != nil {
 			t.Fatalf("Create %d: %v", i, err)
 		}
 	}
@@ -245,8 +245,8 @@ func TestIntegration_ListenerDeliversEvents(t *testing.T) {
 	defer cancel()
 
 	client := newTestClient(t)
-	dbClient := database.NewFirestoreKubeApplierDBClient(client)
-	crud := dbClient.ApplyDesires()
+	dbClient := database.NewFirestoreKubeApplierDBClient(client, client)
+	crud := dbClient.ApplyDesireStatus()
 
 	info := NewKubeApplierInformersWithResyncPeriod(client, 30*time.Second)
 	startAndSync(t, ctx, info)
@@ -312,7 +312,7 @@ func TestIntegration_PerDatabaseIsolation(t *testing.T) {
 	clientA := newTestClient(t)
 	clientB := newTestClient(t)
 
-	dbClientA := database.NewFirestoreKubeApplierDBClient(clientA)
+	dbClientA := database.NewFirestoreKubeApplierDBClient(clientA, clientA)
 
 	infoA := NewKubeApplierInformersWithResyncPeriod(clientA, 30*time.Second)
 	infoB := NewKubeApplierInformersWithResyncPeriod(clientB, 30*time.Second)
@@ -334,7 +334,7 @@ func TestIntegration_PerDatabaseIsolation(t *testing.T) {
 			},
 		},
 	}
-	if _, err := dbClientA.ApplyDesires().Create(ctx, d); err != nil {
+	if _, err := dbClientA.ApplyDesireStatus().Create(ctx, d); err != nil {
 		t.Fatalf("Create in A: %v", err)
 	}
 
@@ -353,7 +353,7 @@ func TestIntegration_AllThreeInformerTypes(t *testing.T) {
 	defer cancel()
 
 	client := newTestClient(t)
-	dbClient := database.NewFirestoreKubeApplierDBClient(client)
+	dbClient := database.NewFirestoreKubeApplierDBClient(client, client)
 
 	ad := &kubeapplier.ApplyDesire{
 		FirestoreMetadata: kubeapplier.FirestoreMetadata{DocumentID: "c1--apply"},
@@ -391,13 +391,13 @@ func TestIntegration_AllThreeInformerTypes(t *testing.T) {
 		},
 	}
 
-	if _, err := dbClient.ApplyDesires().Create(ctx, ad); err != nil {
+	if _, err := dbClient.ApplyDesireStatus().Create(ctx, ad); err != nil {
 		t.Fatalf("Create ApplyDesire: %v", err)
 	}
-	if _, err := dbClient.DeleteDesires().Create(ctx, dd); err != nil {
+	if _, err := dbClient.DeleteDesireStatus().Create(ctx, dd); err != nil {
 		t.Fatalf("Create DeleteDesire: %v", err)
 	}
-	if _, err := dbClient.ReadDesires().Create(ctx, rd); err != nil {
+	if _, err := dbClient.ReadDesireStatus().Create(ctx, rd); err != nil {
 		t.Fatalf("Create ReadDesire: %v", err)
 	}
 

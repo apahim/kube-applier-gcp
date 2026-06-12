@@ -22,8 +22,47 @@ type desire[T any] interface {
 	DeepCopy() *T
 }
 
+// firestoreSpecReader implements SpecReader[T] against a single Firestore
+// collection in the specs database. Read-only: no Create/Replace/Delete.
+type firestoreSpecReader[T any, PT desire[T]] struct {
+	client     *firestore.Client
+	collection string
+}
+
+func (c *firestoreSpecReader[T, PT]) col() *firestore.CollectionRef {
+	return c.client.Collection(c.collection)
+}
+
+func (c *firestoreSpecReader[T, PT]) Get(ctx context.Context, documentID string) (*T, error) {
+	snap, err := c.col().Doc(documentID).Get(ctx)
+	if err != nil {
+		if status.Code(err) == codes.NotFound {
+			return nil, NewNotFoundError()
+		}
+		return nil, fmt.Errorf("firestore get %s/%s: %w", c.collection, documentID, err)
+	}
+	return snapshotToDesire[T, PT](snap)
+}
+
+func (c *firestoreSpecReader[T, PT]) List(ctx context.Context) ([]*T, error) {
+	snaps, err := c.col().Documents(ctx).GetAll()
+	if err != nil {
+		return nil, fmt.Errorf("firestore list %s: %w", c.collection, err)
+	}
+	result := make([]*T, 0, len(snaps))
+	for _, snap := range snaps {
+		obj, err := snapshotToDesire[T, PT](snap)
+		if err != nil {
+			return nil, fmt.Errorf("firestore list %s: convert %s: %w", c.collection, snap.Ref.ID, err)
+		}
+		result = append(result, obj)
+	}
+	return result, nil
+}
+
 // firestoreDesireCRUD implements ResourceCRUD[T] against a single Firestore
-// collection. One instance per desire type per database.
+// collection. Used for both full-document CRUD (desire-tool) and status-only
+// CRUD (agent status writes).
 type firestoreDesireCRUD[T any, PT desire[T]] struct {
 	client     *firestore.Client
 	collection string
